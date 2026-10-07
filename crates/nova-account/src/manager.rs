@@ -43,6 +43,8 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
+use nova_crypto::EcdsaVerifier;
+use nova_primitives::crypto::{Hash, PublicKey, Signature};
 use crate::errors::{AccountError, AccountResult};
 use crate::guardian::{GuardianEvent, GuardianManager, MisconductReport};
 use crate::heartbeat::{ActivityStatus, HeartbeatProcessor, HeartbeatSubmission};
@@ -432,11 +434,23 @@ impl AccountManager {
             });
         }
 
-        // Threshold proof temel doğrulama
-        if threshold_proof.is_empty() {
-            return Err(AccountError::SignatureVerificationFailed {
-                reason: "boş threshold proof".into(),
-            });
+        // NOVA-RED-ACCOUNT-003: Sadece is_empty() yerine gerçek ECDSA doğrulaması.
+        // threshold_proof = secp256k1 imzası, mesaj = blake3("nova_unfreeze_v1" || address_bytes)
+        {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"nova_unfreeze_v1");
+            hasher.update(address.as_bytes());
+            let msg_hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+            let sig = Signature::new_ecdsa(threshold_proof.to_vec());
+            let pk = PublicKey::from_slice(&state.mpc_public_key)
+                .ok_or_else(|| AccountError::SignatureVerificationFailed {
+                    reason: "geçersiz mpc_public_key formatı".into(),
+                })?;
+            EcdsaVerifier::verify(&msg_hash, &sig, &pk).map_err(|_| {
+                AccountError::SignatureVerificationFailed {
+                    reason: "threshold proof ECDSA doğrulaması başarısız".into(),
+                }
+            })?;
         }
 
         state.lifecycle = AccountLifecycle::Active;
@@ -836,11 +850,30 @@ mod tests {
 
     #[test]
     fn hesap_cozulur() {
+        use nova_crypto::EcdsaKeypair;
+        use nova_primitives::crypto::Hash as CryptoHash;
         let mgr = make_manager();
-        create_test_account(&mgr, test_address());
-        mgr.freeze_account(&test_address(), FreezeReason::UserInitiated).unwrap();
-        mgr.unfreeze_account(&test_address(), &[0xFF; 64]).unwrap();
-        let state = mgr.get_account(&test_address()).unwrap();
+
+        // Gerçek keypair ile hesap oluştur (NOVA-RED-ACCOUNT-003)
+        let kp = EcdsaKeypair::from_secret_bytes(&[0xA3u8; 32]).unwrap();
+        let pk = kp.public_key().unwrap();
+        let addr = test_address();
+        let guardian_set = GuardianSet::new(ThresholdConfig::DEFAULT, test_slot());
+        let config = AccountConfig::with_slot(test_slot());
+        mgr.create_account(addr, pk.as_bytes().to_vec(), guardian_set, config).unwrap();
+
+        // Hesabı dondur
+        mgr.freeze_account(&addr, FreezeReason::UserInitiated).unwrap();
+
+        // Unfreeze mesajını oluştur ve imzala
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"nova_unfreeze_v1");
+        hasher.update(addr.as_bytes());
+        let msg_hash = CryptoHash::from_bytes(*hasher.finalize().as_bytes());
+        let sig = kp.sign_hash(&msg_hash).unwrap();
+
+        mgr.unfreeze_account(&addr, sig.as_bytes()).unwrap();
+        let state = mgr.get_account(&addr).unwrap();
         assert!(state.is_active());
     }
 
@@ -851,6 +884,28 @@ mod tests {
         mgr.freeze_account(&test_address(), FreezeReason::UserInitiated).unwrap();
         let result = mgr.unfreeze_account(&test_address(), &[]);
         assert!(matches!(result, Err(AccountError::SignatureVerificationFailed { .. })));
+    }
+
+    /// NOVA-RED-ACCOUNT-003: Sahte imzayla unfreeze reddedilmeli.
+    #[test]
+    fn test_sahte_unfreeze_proof_reddedilir() {
+        use nova_crypto::EcdsaKeypair;
+        let mgr = make_manager();
+        // Gerçek keypair ile hesap oluştur
+        let kp = EcdsaKeypair::from_secret_bytes(&[0xA3u8; 32]).unwrap();
+        let pk = kp.public_key().unwrap();
+        let addr = test_address();
+        let guardian_set = GuardianSet::new(ThresholdConfig::DEFAULT, test_slot());
+        let config = AccountConfig::with_slot(test_slot());
+        mgr.create_account(addr, pk.as_bytes().to_vec(), guardian_set, config).unwrap();
+        mgr.freeze_account(&addr, FreezeReason::UserInitiated).unwrap();
+
+        // Sahte 65 byte imza
+        let result = mgr.unfreeze_account(&addr, &[0xAB; 65]);
+        assert!(
+            matches!(result, Err(AccountError::SignatureVerificationFailed { .. })),
+            "sahte proof reddedilmeli"
+        );
     }
 
     // ─── Guardian yönetimi testleri ───────────────────────────────────────
@@ -875,18 +930,28 @@ mod tests {
 
     #[test]
     fn heartbeat_islenir() {
+        use nova_crypto::EcdsaKeypair;
+        use nova_primitives::crypto::Hash;
         let mgr = make_manager();
-        create_test_account(&mgr, test_address());
 
+        // Gerçek ECDSA keypair ile hesap oluştur (NOVA-RED-ACCOUNT-002)
+        let kp = EcdsaKeypair::from_secret_bytes(&[0xA3u8; 32]).unwrap();
+        let pk = kp.public_key().unwrap();
         let addr = test_address();
+        let guardian_set = GuardianSet::new(ThresholdConfig::DEFAULT, test_slot());
+        let config = AccountConfig::with_slot(test_slot());
+        mgr.create_account(addr, pk.as_bytes().to_vec(), guardian_set, config).unwrap();
+
         let slot = SlotId(test_slot().0 + 200); // yeterli aralık
         let ts = slot.0 * 400 / 1000 + 1_700_000_000;
         let signed_hash = HeartbeatRecord::compute_hash(&addr, &slot, ts);
+        let hash = Hash::from_bytes(*signed_hash.as_bytes());
+        let sig = kp.sign_hash(&hash).unwrap();
         let submission = HeartbeatSubmission {
             account: addr,
             slot,
             timestamp_secs: ts,
-            signature: vec![0xFF; 64],
+            signature: sig.as_bytes().to_vec(),
             is_duress: false,
             signed_hash,
         };

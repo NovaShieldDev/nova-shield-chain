@@ -108,6 +108,14 @@ impl FreezeEngine {
         slot: SlotId,
         timestamp_secs: u64,
     ) -> FreezeResult<FreezeId> {
+        // NOVA-RED-FREEZE-003: Sadece hesap sahibi kendi hesabını dondurabilir.
+        if initiator != account {
+            return Err(FreezeError::UnauthorizedFreezeInitiator {
+                initiator: hex::encode(initiator.as_bytes()),
+                account: hex::encode(account.as_bytes()),
+            });
+        }
+
         // Zaten dondurulmuş mu?
         if self.is_frozen(&account) {
             return Err(FreezeError::AlreadyFrozen);
@@ -665,6 +673,33 @@ mod tests {
     }
 
     // ─── freeze_user ──────────────────────────────────────────────────────────
+
+    /// NOVA-RED-FREEZE-003: Başka birinin hesabını dondurmaya çalışma reddedilmeli.
+    #[test]
+    fn test_freeze_user_unauthorized_initiator_rejected() {
+        let engine = make_engine();
+        let account = addr(1);
+        let attacker = addr(99); // farklı adres
+
+        let err = engine.freeze_user(account, attacker, SlotId(100), 10000).unwrap_err();
+        assert!(
+            matches!(err, FreezeError::UnauthorizedFreezeInitiator { .. }),
+            "yetkisiz initiator reddedilmeli, got: {:?}",
+            err
+        );
+        assert!(!engine.is_frozen(&account), "hesap dondurulmamalı");
+    }
+
+    /// NOVA-RED-FREEZE-003: Hesap sahibi kendi hesabını dondurabilmeli.
+    #[test]
+    fn test_freeze_user_owner_can_freeze_own_account() {
+        let engine = make_engine();
+        let account = addr(1);
+        // initiator == account → geçerli
+        let result = engine.freeze_user(account, account, SlotId(100), 10000);
+        assert!(result.is_ok(), "hesap sahibi kendi hesabını dondurabilmeli");
+        assert!(engine.is_frozen(&account));
+    }
 
     #[test]
     fn test_freeze_user_success() {

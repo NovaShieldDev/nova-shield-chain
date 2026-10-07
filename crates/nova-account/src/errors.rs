@@ -100,6 +100,12 @@ pub enum AccountError {
     #[error("kurtarma onayı yetersiz: {approvals} onay var, {required} gerekli")]
     RecoveryInsufficientApprovals { approvals: usize, required: usize },
 
+    /// Yetkisiz kurtarma iptali — sadece hesap sahibi iptal edebilir.
+    ///
+    /// NOVA-RED-ACCOUNT-002: canceller != hesap sahibi ise reddedilmeli.
+    #[error("yetkisiz kurtarma iptali: canceller {canceller} hesap sahibi {owner} değil")]
+    UnauthorizedRecoveryCanceller { canceller: String, owner: String },
+
     // ─── Heartbeat Hataları ─────────────────────────────────────────────────
     /// Heartbeat imzası geçersiz.
     #[error("geçersiz heartbeat imzası: {address}")]

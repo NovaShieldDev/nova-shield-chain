@@ -26,6 +26,8 @@
 
 use tracing::{debug, info, warn};
 
+use nova_crypto::EcdsaVerifier;
+use nova_primitives::crypto::{Hash, PublicKey, Signature};
 use crate::errors::{AccountError, AccountResult};
 use crate::types::{
     AccountConfig, AccountState, HeartbeatRecord, HEARTBEAT_MIN_INTERVAL_SECS,
@@ -215,23 +217,33 @@ impl HeartbeatProcessor {
             });
         }
 
-        // İmza temel doğrulama (tam MPC doğrulama signing modülünde)
-        if submission.signature.is_empty() {
-            return Err(AccountError::InvalidHeartbeatSignature {
-                address: state.address_hex(),
-            });
-        }
+        // NOVA-RED-ACCOUNT-002: Heartbeat ECDSA imzasını gerçek kriptografik doğrulama ile kontrol et.
+        // Sadece is_empty() yerine secp256k1 imzası doğrulanıyor.
+        {
+            // 1. Hash tutarlılığı: submission.signed_hash == compute_hash(account, slot, ts)
+            let expected_hash = HeartbeatRecord::compute_hash(
+                &submission.account,
+                &submission.slot,
+                submission.timestamp_secs,
+            );
+            if expected_hash != submission.signed_hash {
+                return Err(AccountError::InvalidHeartbeatSignature {
+                    address: state.address_hex(),
+                });
+            }
 
-        // Hash tutarlılığı kontrolü
-        let expected_hash = HeartbeatRecord::compute_hash(
-            &submission.account,
-            &submission.slot,
-            submission.timestamp_secs,
-        );
-        if expected_hash != submission.signed_hash {
-            return Err(AccountError::InvalidHeartbeatSignature {
-                address: state.address_hex(),
-            });
+            // 2. ECDSA doğrulama: signature geçerli ve hesap MPC public key ile uyumlu mu?
+            let hash = Hash::from_bytes(*submission.signed_hash.as_bytes());
+            let sig = Signature::new_ecdsa(submission.signature.clone());
+            let pk = PublicKey::from_slice(&state.mpc_public_key)
+                .ok_or_else(|| AccountError::InvalidHeartbeatSignature {
+                    address: state.address_hex(),
+                })?;
+            EcdsaVerifier::verify(&hash, &sig, &pk).map_err(|_| {
+                AccountError::InvalidHeartbeatSignature {
+                    address: state.address_hex(),
+                }
+            })?;
         }
 
         // Duress heartbeat işleme (§5.4.4 Yöntem 2)
@@ -554,24 +566,34 @@ impl ActivityStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nova_crypto::EcdsaKeypair;
+    use nova_primitives::crypto::Hash;
     use crate::types::{AccountConfig, AccountState, GuardianSet, ThresholdConfig, AccountId};
     use nova_primitives::types::{Address, SlotId};
-
-    fn test_address() -> Address {
-        Address::from_bytes([1u8; 20])
-    }
 
     fn test_slot() -> SlotId {
         SlotId(1_000_000) // 1 milyon slot başlangıç
     }
 
+    /// Deterministik test keypair'i. Seed 0xA3 (geçerli secp256k1 skalar).
+    fn test_keypair() -> EcdsaKeypair {
+        EcdsaKeypair::from_secret_bytes(&[0xA3u8; 32]).expect("geçerli test keypair")
+    }
+
+    fn test_address() -> Address {
+        // Keypair'den türetilen adres test consistency'si için sabit addr kullanıyoruz
+        Address::from_bytes([1u8; 20])
+    }
+
     fn make_account_state() -> AccountState {
+        let kp = test_keypair();
+        let pk = kp.public_key().expect("public key");
         let config = AccountConfig::with_slot(test_slot());
         let guardian_set = GuardianSet::new(ThresholdConfig::DEFAULT, test_slot());
         AccountState::genesis(
             AccountId::new(1),
             test_address(),
-            vec![0x02; 33],
+            pk.as_bytes().to_vec(), // gerçek secp256k1 compressed public key
             guardian_set,
             config,
             test_slot(),
@@ -582,15 +604,19 @@ mod tests {
         HeartbeatState::new(test_address(), test_slot())
     }
 
+    /// Gerçek ECDSA imzalı heartbeat oluştur.
     fn make_heartbeat(slot: SlotId, is_duress: bool) -> HeartbeatSubmission {
         let addr = test_address();
         let ts = slot.0 * MS_PER_SLOT / 1000 + 1_700_000_000;
         let signed_hash = HeartbeatRecord::compute_hash(&addr, &slot, ts);
+        let kp = test_keypair();
+        let hash = Hash::from_bytes(*signed_hash.as_bytes());
+        let sig = kp.sign_hash(&hash).expect("imzalama başarılı");
         HeartbeatSubmission {
             account: addr,
             slot,
             timestamp_secs: ts,
-            signature: vec![0xFF; 64], // sahte ama boş olmayan
+            signature: sig.as_bytes().to_vec(),
             is_duress,
             signed_hash,
         }
@@ -681,6 +707,59 @@ mod tests {
         assert!(result.inheritance_cancelled);
         assert!(hb_state.grace_period_started_at.is_none());
         assert!(hb_state.grace_period_ends_at.is_none());
+    }
+
+    /// NOVA-RED-ACCOUNT-002: Sahte ECDSA imzası (65 byte random) reddedilmeli.
+    #[test]
+    fn test_sahte_ecdsa_imzasi_reddedilir() {
+        let mut state = make_account_state();
+        let mut hb_state = make_heartbeat_state();
+        let slot = SlotId(test_slot().0 + HEARTBEAT_MIN_INTERVAL_SECS * 1000 / MS_PER_SLOT + 1);
+        let addr = test_address();
+        let ts = slot.0 * MS_PER_SLOT / 1000 + 1_700_000_000;
+        let signed_hash = HeartbeatRecord::compute_hash(&addr, &slot, ts);
+        let hb = HeartbeatSubmission {
+            account: addr,
+            slot,
+            timestamp_secs: ts,
+            signature: vec![0xAB; 65], // 65 byte sahte imza
+            is_duress: false,
+            signed_hash,
+        };
+        let result = HeartbeatProcessor::process_heartbeat(&mut state, &mut hb_state, hb, ts);
+        assert!(
+            matches!(result, Err(AccountError::InvalidHeartbeatSignature { .. })),
+            "sahte imza reddedilmeli"
+        );
+    }
+
+    /// NOVA-RED-ACCOUNT-002: Yanlış public key ile imzalanmış heartbeat reddedilmeli.
+    #[test]
+    fn test_yanlis_public_key_imzasi_reddedilir() {
+        let mut state = make_account_state(); // keypair 0xA3 kullanıyor
+        let mut hb_state = make_heartbeat_state();
+        let slot = SlotId(test_slot().0 + HEARTBEAT_MIN_INTERVAL_SECS * 1000 / MS_PER_SLOT + 1);
+        let addr = test_address();
+        let ts = slot.0 * MS_PER_SLOT / 1000 + 1_700_000_000;
+        let signed_hash = HeartbeatRecord::compute_hash(&addr, &slot, ts);
+
+        // FARKLI keypair (0x55) ile imzala
+        let other_kp = EcdsaKeypair::from_secret_bytes(&[0x55u8; 32]).expect("keypair");
+        let hash = Hash::from_bytes(*signed_hash.as_bytes());
+        let sig = other_kp.sign_hash(&hash).expect("imzalama");
+        let hb = HeartbeatSubmission {
+            account: addr,
+            slot,
+            timestamp_secs: ts,
+            signature: sig.as_bytes().to_vec(),
+            is_duress: false,
+            signed_hash,
+        };
+        let result = HeartbeatProcessor::process_heartbeat(&mut state, &mut hb_state, hb, ts);
+        assert!(
+            matches!(result, Err(AccountError::InvalidHeartbeatSignature { .. })),
+            "yanlış keypair ile imzalanmış heartbeat reddedilmeli"
+        );
     }
 
     // ─── evaluate_activity testleri ───────────────────────────────────────

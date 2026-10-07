@@ -46,8 +46,8 @@ mod tests {
 
         assert!(!engine.is_frozen(&user), "Başlangıçta dondurulmuş olmamalı");
 
-        // Kullanıcı kendi hesabını dondurur (freeze_user API: account, initiator, slot, timestamp)
-        engine.freeze_user(user, guardian_addr(1), slot, 0).unwrap();
+        // Kullanıcı kendi hesabını dondurur — initiator == user (NOVA-RED-FREEZE-003)
+        engine.freeze_user(user, user, slot, 0).unwrap();
 
         assert!(engine.is_frozen(&user), "Dondurma sonrası frozen=true olmalı");
     }
@@ -60,8 +60,8 @@ mod tests {
         let user = addr(20);
         let slot = SlotId(200);
 
-        // Dondur
-        engine.freeze_user(user, guardian_addr(1), slot, 0).unwrap();
+        // Kullanıcı kendi hesabını dondurur (initiator == user)
+        engine.freeze_user(user, user, slot, 0).unwrap();
 
         // İşlem kontrolü → reddedilmeli
         let check = engine.check_operation(&user, OperationType::Transfer, slot);
@@ -105,9 +105,9 @@ mod tests {
         let engine = FreezeEngine::with_defaults();
         let slot = SlotId(500);
 
-        // 3 hesap dondur
+        // 3 hesap kendi kendini dondurur (initiator == account)
         for i in 50u8..53 {
-            engine.freeze_user(addr(i), guardian_addr(1), slot, 0).unwrap();
+            engine.freeze_user(addr(i), addr(i), slot, 0).unwrap();
         }
 
         // Her biri frozen
@@ -129,7 +129,8 @@ mod tests {
         assert_eq!(engine.total_frozen_accounts(), 0, "Başlangıçta 0 dondurulmuş");
 
         for i in 0u8..5 {
-            engine.freeze_user(addr(i + 100), guardian_addr(1), slot, 0).unwrap();
+            let a = addr(i + 100);
+            engine.freeze_user(a, a, slot, 0).unwrap();
         }
 
         assert_eq!(engine.total_frozen_accounts(), 5, "5 hesap dondurulmuş olmalı");
@@ -173,9 +174,10 @@ mod tests {
             "Guardian aktif olmalı"
         );
 
-        // Guardian hesabı dondurur (initiator olarak guardian adresi)
-        freeze_engine.freeze_user(target, guardian, slot, 0).unwrap();
-        assert!(freeze_engine.is_frozen(&target), "Guardian dondurması etkili olmalı");
+        // Hesap sahibi kendi hesabını dondurur (initiator == target)
+        // Not: Başkasının hesabını dondurmak için freeze_guardian() API'si kullanılmalı.
+        freeze_engine.freeze_user(target, target, slot, 0).unwrap();
+        assert!(freeze_engine.is_frozen(&target), "Freeze etkili olmalı");
 
         // Freeze durumunu sorgula
         let state = freeze_engine.get_freeze_state(&target);
@@ -190,7 +192,7 @@ mod tests {
         let user = addr(210);
         let freeze_slot = SlotId(800);
 
-        engine.freeze_user(user, guardian_addr(1), freeze_slot, 0).unwrap();
+        engine.freeze_user(user, user, freeze_slot, 0).unwrap();
         assert!(engine.is_frozen(&user));
 
         // Slot ilerlet — 72 saatlik soruşturma penceresi dolarsa otomatik çözülür

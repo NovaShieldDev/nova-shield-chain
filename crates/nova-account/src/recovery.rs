@@ -34,6 +34,7 @@
 use std::collections::HashMap;
 use tracing::{info, warn, debug};
 
+use hex;
 use nova_crypto::{blake3_hash, EcdsaVerifier};
 use nova_primitives::crypto::{Hash, PublicKey, Signature};
 
@@ -354,6 +355,14 @@ impl RecoveryEngine {
         request: &mut RecoveryRequest,
         canceller: Address,
     ) -> AccountResult<()> {
+        // NOVA-RED-ACCOUNT-002: Sadece hesap sahibi kendi kurtarma talebini iptal edebilir.
+        if canceller != request.account {
+            return Err(AccountError::UnauthorizedRecoveryCanceller {
+                canceller: hex::encode(canceller.as_bytes()),
+                owner: hex::encode(request.account.as_bytes()),
+            });
+        }
+
         match &request.status {
             RecoveryStatus::Completed => {
                 return Err(AccountError::InternalError {
@@ -825,6 +834,31 @@ mod tests {
         let mut req = make_recovery_request();
         let result = RecoveryEngine::cancel_recovery(&mut req, test_address());
         assert!(result.is_ok());
+        assert_eq!(req.status, RecoveryStatus::CancelledByUser);
+    }
+
+    /// NOVA-RED-ACCOUNT-002: Başkası hesap sahibinin kurtarma talebini iptal edemez.
+    #[test]
+    fn test_yetkisiz_canceller_reddedilir() {
+        let mut req = make_recovery_request(); // account = test_address() = [1;20]
+        let attacker = Address::from_bytes([99u8; 20]); // farklı adres
+
+        let err = RecoveryEngine::cancel_recovery(&mut req, attacker).unwrap_err();
+        assert!(
+            matches!(err, AccountError::UnauthorizedRecoveryCanceller { .. }),
+            "yetkisiz canceller reddedilmeli, got: {:?}",
+            err
+        );
+        // İptal olmamış olmalı
+        assert_ne!(req.status, RecoveryStatus::CancelledByUser);
+    }
+
+    /// NOVA-RED-ACCOUNT-002: Hesap sahibi kendi talebini iptal edebilmeli.
+    #[test]
+    fn test_hesap_sahibi_iptal_edebilir() {
+        let mut req = make_recovery_request(); // account = test_address()
+        let result = RecoveryEngine::cancel_recovery(&mut req, test_address());
+        assert!(result.is_ok(), "hesap sahibi iptal edebilmeli");
         assert_eq!(req.status, RecoveryStatus::CancelledByUser);
     }
 

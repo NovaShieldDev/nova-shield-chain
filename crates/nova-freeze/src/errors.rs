@@ -25,6 +25,12 @@ pub enum FreezeError {
     NotFrozen,
 
     // ─── Guardian yetkilendirme ─────────────────────────────────────────────
+    /// Yetkisiz başlatıcı — freeze_user'da initiator hesap sahibi olmalı.
+    ///
+    /// NOVA-RED-FREEZE-003: Herhangi biri başkasının hesabını dondurmasını engelle.
+    #[error("yetkisiz freeze başlatıcı: initiator {initiator} != hesap {account}")]
+    UnauthorizedFreezeInitiator { initiator: String, account: String },
+
     /// Guardian bu hesabı dondurmaya yetkili değil.
     #[error("guardian dondurma yetkisi yok")]
     GuardianNotAuthorized,
@@ -102,7 +108,8 @@ impl FreezeError {
     pub fn is_auth_error(&self) -> bool {
         matches!(
             self,
-            Self::GuardianNotAuthorized
+            Self::UnauthorizedFreezeInitiator { .. }
+                | Self::GuardianNotAuthorized
                 | Self::GuardianJailed { .. }
                 | Self::InvalidThresholdProof
                 | Self::InsufficientSigners { .. }

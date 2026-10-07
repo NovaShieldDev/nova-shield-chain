@@ -172,12 +172,17 @@ mod integration_tests {
     // ─── Test 1: Hesap yaşam döngüsü ─────────────────────────────────────────
     #[test]
     fn test_01_account_lifecycle_active_to_frozen_to_unfrozen() {
+        use nova_crypto::EcdsaKeypair;
+        use nova_primitives::crypto::Hash as CryptoHash;
         let mgr = make_manager();
         let addr = test_address(1);
         let gs = make_guardian_set(5, 0);
         let cfg = make_config(0);
 
-        mgr.create_account(addr.clone(), test_mpc_pubkey(1), gs, cfg).unwrap();
+        // Gerçek keypair ile hesap oluştur (NOVA-RED-ACCOUNT-003)
+        let kp = EcdsaKeypair::from_secret_bytes(&[0xB1u8; 32]).unwrap();
+        let pk = kp.public_key().unwrap();
+        mgr.create_account(addr.clone(), pk.as_bytes().to_vec(), gs, cfg).unwrap();
         let acc = mgr.get_account(&addr).unwrap();
         assert!(matches!(acc.lifecycle, AccountLifecycle::Active));
 
@@ -185,7 +190,13 @@ mod integration_tests {
         let acc = mgr.get_account(&addr).unwrap();
         assert!(matches!(acc.lifecycle, AccountLifecycle::Frozen { .. }));
 
-        mgr.unfreeze_account(&addr, b"threshold_proof").unwrap();
+        // Gerçek ECDSA imzalı unfreeze proof
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"nova_unfreeze_v1");
+        hasher.update(addr.as_bytes());
+        let msg_hash = CryptoHash::from_bytes(*hasher.finalize().as_bytes());
+        let sig = kp.sign_hash(&msg_hash).unwrap();
+        mgr.unfreeze_account(&addr, sig.as_bytes()).unwrap();
         let acc = mgr.get_account(&addr).unwrap();
         assert!(matches!(acc.lifecycle, AccountLifecycle::Active));
     }
