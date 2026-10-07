@@ -12,7 +12,7 @@
 //! Her kısıt en fazla 2 çarpma kapısı kullanır → toplam ~8 kısıt.
 
 use ark_bn254::Fr;
-use ark_ff::PrimeField;
+use ark_ff::{PrimeField, Field};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_r1cs_std::prelude::*;
 use ark_r1cs_std::fields::fp::FpVar;
@@ -127,6 +127,33 @@ impl ConstraintSynthesizer<Fr> for TransferCircuit {
         // cm_out_fe == output_amount_fe * output_blinding_fe
         let computed_cm_out = &output_var * &out_blind_var;
         computed_cm_out.enforce_equal(&cm_out_var)?;
+
+        // ── Kısıt 5-6 (NOVA-RED-CRYPTO-005): Non-zero blinding ───────────────
+        // blinding=0 ise cm=0 — herhangi bir miktar sıfır commitment'ı satisfy eder.
+        // Inverse trick: blinding * blinding_inv == 1 → blinding ≠ 0 garantisi.
+        let one = FpVar::constant(Fr::from(1u64));
+
+        let in_blind_inv_var = FpVar::new_witness(
+            ark_relations::ns!(cs, "input_blinding_inv"),
+            || {
+                let b = self.input_blinding
+                    .map(|bytes| Fr::from_le_bytes_mod_order(&bytes))
+                    .unwrap_or(Fr::from(1u64)); // setup dummy: 1 (terslenebilir)
+                Ok(b.inverse().unwrap_or(Fr::from(1u64)))
+            },
+        )?;
+        (&in_blind_var * &in_blind_inv_var).enforce_equal(&one)?;
+
+        let out_blind_inv_var = FpVar::new_witness(
+            ark_relations::ns!(cs, "output_blinding_inv"),
+            || {
+                let b = self.output_blinding
+                    .map(|bytes| Fr::from_le_bytes_mod_order(&bytes))
+                    .unwrap_or(Fr::from(1u64)); // setup dummy: 1 (terslenebilir)
+                Ok(b.inverse().unwrap_or(Fr::from(1u64)))
+            },
+        )?;
+        (&out_blind_var * &out_blind_inv_var).enforce_equal(&one)?;
 
         Ok(())
     }
@@ -272,5 +299,33 @@ mod tests {
         pub_inputs[0] = Fr::from(200u64);
         let result = groth16_verify(&pvk, &proof, &pub_inputs);
         assert!(result.is_err(), "Yanlış fee kabul edilmemeli");
+    }
+
+    /// NOVA-RED-CRYPTO-005: Blinding=0 kısıtı ihlal eder.
+    #[test]
+    fn test_transfer_zero_blinding_rejected() {
+        use ark_relations::r1cs::ConstraintSystem;
+
+        let zero_blind = [0u8; 32];
+        let in_blind = [3u8; 32];
+
+        // input_blinding=0 → kısıt ihlali
+        let inputs_with_zero_in = compute_transfer_public_inputs(
+            1000, &zero_blind, 900, &in_blind, &[5u8; 32], 100,
+        );
+        let circuit = TransferCircuit {
+            input_amount: Some(1000),
+            input_blinding: Some(zero_blind),
+            output_amount: Some(900),
+            output_blinding: Some(in_blind),
+            sender_secret_key: Some([5u8; 32]),
+            input_commitment: Some(inputs_with_zero_in.input_commitment),
+            nullifier: Some(inputs_with_zero_in.nullifier),
+            output_commitment: Some(inputs_with_zero_in.output_commitment),
+            fee: Some(100),
+        };
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap(), "input_blinding=0 kısıt ihlal etmeli");
     }
 }
