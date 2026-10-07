@@ -6,4 +6,6 @@ pub mod precompiles;
 
 pub use bridge::WasmEvmBridge;
 pub use compat::{EvmCallResult, EvmCompatLayer};
-pub use precompiles::{NovaPrecompile, PrecompileRegistry};
+pub use precompiles::{
+    ChainStateProvider, NoopChainStateProvider, NovaPrecompile, PrecompileRegistry,
+};

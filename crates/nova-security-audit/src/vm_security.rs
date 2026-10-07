@@ -227,7 +227,9 @@ mod tests {
         assert_eq!(r1.gas_used, r2.gas_used, "gas kullanımı deterministik olmalı");
     }
 
-    /// PoC: MPC precompile geçerli adres → aktif kontrol
+    /// PoC: MPC precompile → VM-003 fix: NoopChainStateProvider varsayılan inactive döndürür
+    /// Eski hata: tüm adresler için hardcoded [1] (aktif) — güvenlik açığı.
+    /// Düzeltme: ChainStateProvider::is_mpc_account() → NoopChainStateProvider = [0] (inactive).
     #[test]
     fn poc_mpc_precompile_active_check() {
         let executor = NovaVmExecutor::new();
@@ -244,7 +246,8 @@ mod tests {
         }).unwrap();
 
         assert!(result.success);
-        assert_eq!(result.output, vec![1], "MPC precompile aktif guard döndürmeli");
+        // VM-003: NoopChainStateProvider → inactive (0), artık hardcoded aktif değil
+        assert_eq!(result.output, vec![0], "VM-003 fix: NoopChainStateProvider MPC inactive döndürmeli");
     }
 
     /// PoC: BLAKE3 precompile büyük input → OOM/timeout yok

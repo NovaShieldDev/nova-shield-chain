@@ -23,7 +23,10 @@ pub use upgrade::{
     GOVERNANCE_MODULE_ADDR, MAX_RUNTIME_CODE_SIZE, RUNTIME_HISTORY_DEPTH,
 };
 pub use errors::{VmError, VmResult};
-pub use evm::{EvmCompatLayer, NovaPrecompile, PrecompileRegistry, WasmEvmBridge};
+pub use evm::{
+    ChainStateProvider, EvmCompatLayer, NoopChainStateProvider, NovaPrecompile,
+    PrecompileRegistry, WasmEvmBridge,
+};
 pub use wasm::{ComputeBudget, GasMeter, HostContext, LinearMemory, WasmModule, WasmRuntime};
 
 // ─── Integration Tests ────────────────────────────────────────────────────────
@@ -134,16 +137,16 @@ mod tests {
         let mut ctx = HostContext::new(addr(10), addr(20), 12345, 0);
         let mut meter = GasMeter::new(1_000_000);
 
-        // MPC query
+        // VM-003: NoopChainStateProvider → inactive (mock hardcoded active kaldırıldı)
         let mpc = NovaHostFns::call(&HostCallType::NovaMpcQuery, &mut ctx, &mut meter, &[]).unwrap();
-        assert_eq!(mpc, b"mpc:active");
+        assert_eq!(mpc, b"mpc:inactive");
 
-        // Guardian check
+        // VM-003: NoopChainStateProvider → guardian inactive
         let guardian_input = addr(5).as_bytes().to_vec();
         let g = NovaHostFns::call(&HostCallType::NovaGuardianCheck, &mut ctx, &mut meter, &guardian_input).unwrap();
-        assert_eq!(g, b"guardian:active");
+        assert_eq!(g, b"guardian:inactive");
 
-        // Batch price
+        // VM-006: checked_mul — overflow yok, fallback formül çalışıyor
         let price_bytes = NovaHostFns::call(&HostCallType::NovaBatchPrice, &mut ctx, &mut meter, &[]).unwrap();
         let price = u64::from_le_bytes(price_bytes.try_into().unwrap());
         assert_eq!(price, 12345 * 1_000_000);
@@ -179,9 +182,9 @@ mod tests {
         let price = u64::from_le_bytes(price_bytes.try_into().unwrap());
         assert_eq!(price, 5000 * 1_000_000);
 
-        // Guardian precompile
+        // VM-003: NoopChainStateProvider → guardian inactive (0)
         let (status, _) = reg.call(&GUARDIAN_PRECOMPILE_ADDR, addr(7).as_bytes(), &addr(1)).unwrap();
-        assert_eq!(status, vec![1]);
+        assert_eq!(status, vec![0], "NoopChainStateProvider: guardian inactive");
     }
 
     // ─── 7: EVM ABI encoding ──────────────────────────────────────────────

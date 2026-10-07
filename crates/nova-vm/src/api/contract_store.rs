@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// VM-008: Maksimum bytecode boyutu — sonsuz depolama DoS saldırısına karşı koruma.
+/// Cosmos SDK x/wasm: varsayılan 800 KB sınırı (parametre ile ayarlanabilir).
+/// Nova: 512 KB sabit sınır.
+pub const MAX_BYTECODE_SIZE: usize = 512 * 1024; // 512 KB
+
 // ─── ContractType ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +85,16 @@ impl ContractStore {
     ) -> VmResult<u64> {
         if bytecode.is_empty() {
             return Err(VmError::InvalidBytecode { reason: "boş bytecode".into() });
+        }
+        // VM-008: Maksimum bytecode boyutu kontrolü — sonsuz depolama DoS koruması
+        if bytecode.len() > MAX_BYTECODE_SIZE {
+            return Err(VmError::InvalidBytecode {
+                reason: format!(
+                    "bytecode çok büyük: {} byte > {} byte (maks)",
+                    bytecode.len(),
+                    MAX_BYTECODE_SIZE
+                ),
+            });
         }
         let code_id = self.next_code_id.fetch_add(1, Ordering::SeqCst);
         let code_hash = *blake3::hash(&bytecode).as_bytes();
@@ -197,6 +212,26 @@ mod tests {
             store.upload_code(vec![], ContractType::NovaWasm, addr(1), 0),
             Err(VmError::InvalidBytecode { .. })
         ));
+    }
+
+    /// VM-008: Bytecode boyut sınırı aşılınca hata
+    #[test]
+    fn test_upload_oversized_bytecode_rejected() {
+        let store = ContractStore::new();
+        let oversized = vec![0u8; MAX_BYTECODE_SIZE + 1];
+        assert!(matches!(
+            store.upload_code(oversized, ContractType::NovaWasm, addr(1), 0),
+            Err(VmError::InvalidBytecode { .. })
+        ));
+    }
+
+    /// VM-008: Tam sınırda bytecode kabul edilir
+    #[test]
+    fn test_upload_max_size_bytecode_accepted() {
+        let store = ContractStore::new();
+        let max_size = vec![0u8; MAX_BYTECODE_SIZE];
+        // Sınırda olan bytecode kabul edilmeli
+        assert!(store.upload_code(max_size, ContractType::NovaWasm, addr(1), 0).is_ok());
     }
 
     #[test]

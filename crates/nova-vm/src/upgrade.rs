@@ -114,7 +114,11 @@ impl RuntimeCodeStore {
         }
     }
 
-    /// Genesis runtime kodunu yükle (ilk versiyon, yetki kontrolü yok)
+    /// Genesis runtime kodunu yükle (ilk versiyon, yetki kontrolü yok).
+    ///
+    /// VM-009 düzeltmesi: İdempotency guard eklendi. Bu fonksiyon yalnızca bir kez
+    /// çağrılabilir (genesis'te). Tekrar çağrılırsa hata döner; böylece genesis kodu
+    /// üzerine yazma saldırısı engellenir.
     pub fn initialize(&self, code: Vec<u8>, spec_version: u32) -> VmResult<()> {
         validate_wasm_code(&code)?;
 
@@ -130,6 +134,15 @@ impl RuntimeCodeStore {
         };
 
         let mut inner = self.inner.lock().unwrap();
+
+        // VM-009: Yeniden başlatma koruması — genesis kodu sadece bir kez yazılır
+        if inner.active_code.is_some() {
+            return Err(VmError::ExecutionFailed {
+                reason: "initialize: runtime zaten başlatılmış; genesis kodu üzerine yazılamaz"
+                    .to_string(),
+            });
+        }
+
         inner.active_code = Some(code);
         inner.active_version = Some(version);
         Ok(())
@@ -325,6 +338,18 @@ mod tests {
     fn test_initialize_invalid_wasm() {
         let store = RuntimeCodeStore::new();
         assert!(store.initialize(vec![0u8; 10], 1).is_err());
+    }
+
+    // VM-009: Çift initialize reddedilir
+    #[test]
+    fn test_initialize_idempotency_guard() {
+        let store = RuntimeCodeStore::new();
+        store.initialize(valid_wasm(0), 1).unwrap();
+        // İkinci çağrı hata vermeli — genesis kodu üzerine yazılamaz
+        let err = store.initialize(valid_wasm(1), 2);
+        assert!(err.is_err(), "İkinci initialize çağrısı reddedilmeli");
+        // Aktif versiyon değişmemeli
+        assert_eq!(store.active_version().unwrap().spec_version, 1);
     }
 
     // 3. set_code başarılı upgrade

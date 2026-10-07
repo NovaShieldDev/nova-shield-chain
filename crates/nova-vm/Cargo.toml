@@ -9,6 +9,7 @@ license.workspace    = true
 
 [dependencies]
 nova-primitives = { workspace = true }
+nova-zk         = { workspace = true }
 blake3          = { workspace = true }
 dashmap         = { workspace = true }
 parking_lot     = { workspace = true }

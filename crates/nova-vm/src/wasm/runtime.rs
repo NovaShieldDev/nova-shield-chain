@@ -49,6 +49,10 @@ pub const WASM_OUTPUT_OFFSET: usize = 4096;
 pub const WASM_MAX_INPUT_SIZE: usize = WASM_OUTPUT_OFFSET;
 /// WASM memory export ismi
 pub const WASM_MEMORY_EXPORT: &str = "memory";
+/// VM-001: Maksimum WASM çıktı boyutu — OOM saldırısına karşı koruma.
+/// Kötü niyetli kontrat arbitrarily büyük `output_len` döndürerek host
+/// belleğini tüketemez.
+pub const MAX_WASM_OUTPUT_SIZE: usize = 65_536; // 64 KB
 
 // ─── NovaHostState ────────────────────────────────────────────────────────────
 
@@ -315,6 +319,16 @@ fn dispatch_method(
                 return Ok(vec![]);
             }
 
+            // VM-001: OOM koruması — kötü niyetli kontrat devasa output_len döndürerek
+            // host belleğini tüketemez.
+            if out_len > MAX_WASM_OUTPUT_SIZE {
+                return Err(VmError::ExecutionFailed {
+                    reason: format!(
+                        "WASM çıktı boyutu sınırı aşıldı ({out_len} > {MAX_WASM_OUTPUT_SIZE})"
+                    ),
+                });
+            }
+
             let mut out_buf = vec![0u8; out_len];
             memory
                 .read(&*store, WASM_OUTPUT_OFFSET, &mut out_buf)
@@ -360,6 +374,10 @@ fn build_nova_linker(engine: &Engine) -> VmResult<Linker<NovaHostState>> {
     let mut linker: Linker<NovaHostState> = Linker::new(engine);
 
     // nova_storage_read(key_ptr, key_len, out_ptr) -> i32
+    //
+    // VM-002 düzeltmesi: Depolama anahtarı kontrat adresi ile öneklenir.
+    // Aynı anahtar adına sahip farklı kontratlar birbirinin değerlerini
+    // ezemiyor. Format: [20 byte contract_addr] || [key bytes]
     linker
         .func_wrap(
             "env",
@@ -377,9 +395,15 @@ fn build_nova_linker(engine: &Engine) -> VmResult<Linker<NovaHostState>> {
                 if k_end > data.len() {
                     return -3;
                 }
-                let key = data[k_start..k_end].to_vec();
+                let raw_key = &data[k_start..k_end];
 
-                let result = caller.data_mut().ctx.storage_read(&key);
+                // VM-002: kontrat adresi ile namespace
+                let contract_bytes = caller.data().ctx.contract.as_bytes().to_vec();
+                let mut namespaced_key = Vec::with_capacity(20 + raw_key.len());
+                namespaced_key.extend_from_slice(&contract_bytes);
+                namespaced_key.extend_from_slice(raw_key);
+
+                let result = caller.data_mut().ctx.storage_read(&namespaced_key);
                 match result {
                     Some(val) => {
                         let out = out_ptr as usize;
@@ -397,6 +421,8 @@ fn build_nova_linker(engine: &Engine) -> VmResult<Linker<NovaHostState>> {
         .map_err(|e| VmError::ExecutionFailed { reason: e.to_string() })?;
 
     // nova_storage_write(key_ptr, key_len, val_ptr, val_len)
+    //
+    // VM-002 düzeltmesi: Anahtar kontrat adresi ile öneklenir.
     linker
         .func_wrap(
             "env",
@@ -421,9 +447,16 @@ fn build_nova_linker(engine: &Engine) -> VmResult<Linker<NovaHostState>> {
                     return;
                 }
 
-                let key = data[k_s..k_e].to_vec();
+                let raw_key = data[k_s..k_e].to_vec();
                 let val = data[v_s..v_e].to_vec();
-                caller.data_mut().ctx.storage_write(key, val);
+
+                // VM-002: kontrat adresi ile namespace
+                let contract_bytes = caller.data().ctx.contract.as_bytes().to_vec();
+                let mut namespaced_key = Vec::with_capacity(20 + raw_key.len());
+                namespaced_key.extend_from_slice(&contract_bytes);
+                namespaced_key.extend_from_slice(&raw_key);
+
+                caller.data_mut().ctx.storage_write(namespaced_key, val);
             },
         )
         .map_err(|e| VmError::ExecutionFailed { reason: e.to_string() })?;
@@ -679,8 +712,12 @@ mod tests {
         let result = rt.execute(&module, "instantiate", &[], &mut ctx, ComputeBudget::default()).unwrap();
 
         assert_eq!(result.output, vec![0], "instantiate başarı kodu 0 döndürmeli");
-        // nova_storage_write("init", "ok") çağrıldı mı?
-        assert!(ctx.storage_read(b"init").is_some(), "instantiate storage'a 'init' yazmalı");
+
+        // VM-002: nova_storage_write kontrat adresi ile namespace oluyor.
+        // make_ctx contract = addr(2) → namespace = [2;20] || b"init"
+        let mut ns_key: Vec<u8> = addr(2).as_bytes().to_vec();
+        ns_key.extend_from_slice(b"init");
+        assert!(ctx.storage_read(&ns_key).is_some(), "instantiate storage'a namespace'li 'init' yazmalı");
         assert!(result.gas_used > 0);
     }
 
@@ -715,8 +752,11 @@ mod tests {
         let module = rt.compile(&nova_test_contract_wasm()).unwrap();
         let mut ctx = make_ctx();
 
-        // Önce storage'a yaz
-        ctx.storage_write(b"key1".to_vec(), b"value1".to_vec());
+        // VM-002: WASM nova_storage_read, contract adresi ile namespace'li anahtar okur.
+        // make_ctx contract = addr(2) → namespace = [2;20] || b"key1"
+        let mut ns_key: Vec<u8> = addr(2).as_bytes().to_vec();
+        ns_key.extend_from_slice(b"key1");
+        ctx.storage_write(ns_key, b"value1".to_vec());
 
         // Query ile oku
         let result = rt.execute(&module, "query", b"key1", &mut ctx, ComputeBudget::default()).unwrap();

@@ -329,7 +329,8 @@ mod tests {
             slot: 0,
         }).unwrap();
         assert!(result.success);
-        assert_eq!(result.output, vec![1]); // active
+        // VM-003: NoopChainStateProvider → inactive (0), artık hardcoded aktif değil
+        assert_eq!(result.output, vec![0]); // inactive by default (NoopChainStateProvider)
     }
 
     #[test]

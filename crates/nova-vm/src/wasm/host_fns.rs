@@ -10,6 +10,7 @@
 //! - `nova_emit_event`: Zincir üstü event yayınlama
 
 use crate::errors::{VmError, VmResult};
+use crate::evm::precompiles::{ChainStateProvider, NoopChainStateProvider};
 use crate::wasm::gas::{
     GasMeter, GAS_PER_HOST_CALL, GAS_PER_STORAGE_READ, GAS_PER_STORAGE_WRITE,
     GAS_PER_STORAGE_WRITE_BYTE,
@@ -18,6 +19,7 @@ use crate::wasm::gas::{
 use nova_primitives::Address;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ─── HostCallType ─────────────────────────────────────────────────────────────
 
@@ -83,6 +85,10 @@ impl HostCallType {
 // ─── HostContext ──────────────────────────────────────────────────────────────
 
 /// Yürütme sırasındaki zincir bağlamı — Solana InvokeContext benzeri
+///
+/// VM-003 düzeltmesi: `state_provider` alanı eklendi. NovaMpcQuery ve
+/// NovaGuardianCheck host fonksiyonları artık gerçek state sağlayıcısını
+/// kullanıyor. Varsayılan: `NoopChainStateProvider` (tüm sorgular inactive).
 #[derive(Debug, Clone)]
 pub struct HostContext {
     /// Çağıran adres
@@ -99,6 +105,8 @@ pub struct HostContext {
     pub events: Vec<ContractEvent>,
     /// Log mesajları
     pub logs: Vec<String>,
+    /// Zincir durum sağlayıcısı — MPC/Guardian sorguları için
+    pub state_provider: Arc<dyn ChainStateProvider>,
 }
 
 impl HostContext {
@@ -111,6 +119,27 @@ impl HostContext {
             storage: HashMap::new(),
             events: Vec::new(),
             logs: Vec::new(),
+            state_provider: Arc::new(NoopChainStateProvider),
+        }
+    }
+
+    /// Belirli bir `ChainStateProvider` ile HostContext oluştur.
+    pub fn new_with_state(
+        caller: Address,
+        contract: Address,
+        slot: u64,
+        value: u128,
+        state_provider: Arc<dyn ChainStateProvider>,
+    ) -> Self {
+        Self {
+            caller,
+            contract,
+            current_slot: slot,
+            value,
+            storage: HashMap::new(),
+            events: Vec::new(),
+            logs: Vec::new(),
+            state_provider,
         }
     }
 
@@ -243,24 +272,41 @@ impl NovaHostFns {
                 Ok(vec![1])
             }
 
+            // ── VM-003 düzeltmesi: gerçek state sorgulama ───────────────────
             HostCallType::NovaMpcQuery => {
-                // MPC hesap bilgisi — mock: her zaman "active" döner
-                Ok(b"mpc:active".to_vec())
+                // input: [20 byte account_addr] (opsiyonel — yoksa caller kullanılır)
+                let addr_bytes: [u8; 20] = if input.len() >= 20 {
+                    input[..20].try_into().unwrap()
+                } else {
+                    *ctx.caller.as_bytes()
+                };
+                let active = ctx.state_provider.is_mpc_account(&addr_bytes);
+                Ok(if active { b"mpc:active".to_vec() } else { b"mpc:inactive".to_vec() })
             }
 
+            // ── VM-006 düzeltmesi: checked_mul (wrapping_mul kaldırıldı) ─────
             HostCallType::NovaBatchPrice => {
-                // Clearing price — mock: slot bazlı fiyat
-                let price: u64 = ctx.current_slot.wrapping_mul(1_000_000);
+                let price: u64 = ctx.state_provider
+                    .get_batch_clearing_price(ctx.current_slot)
+                    .unwrap_or_else(|| {
+                        ctx.current_slot.checked_mul(1_000_000).unwrap_or(u64::MAX)
+                    });
                 Ok(price.to_le_bytes().to_vec())
             }
 
+            // ── VM-003 düzeltmesi: gerçek guardian durumu ────────────────────
             HostCallType::NovaGuardianCheck => {
-                // Guardian durumu — input: guardian adres (20 byte)
+                // input: [20 byte guardian_addr]
                 if input.len() < 20 {
                     return Err(VmError::InvalidInput);
                 }
-                // Mock: her zaman "active" döner
-                Ok(b"guardian:active".to_vec())
+                let addr_bytes: [u8; 20] = input[..20].try_into().unwrap();
+                let active = ctx.state_provider.is_active_guardian(&addr_bytes);
+                Ok(if active {
+                    b"guardian:active".to_vec()
+                } else {
+                    b"guardian:inactive".to_vec()
+                })
             }
 
             HostCallType::Blake3Hash => {
@@ -383,21 +429,52 @@ mod tests {
         assert!(m.remaining() <= GAS_PER_HOST_CALL);
     }
 
+    /// VM-003: NoopChainStateProvider → "mpc:inactive" (mock hardcoded "active" kaldırıldı)
     #[test]
-    fn test_nova_mpc_query() {
+    fn test_nova_mpc_query_inactive_by_default() {
         let mut ctx = ctx();
         let mut m = meter();
         let result = NovaHostFns::call(&HostCallType::NovaMpcQuery, &mut ctx, &mut m, &[]).unwrap();
+        assert_eq!(result, b"mpc:inactive");
+    }
+
+    /// VM-003: Gerçek state provider ile "mpc:active" dönebilir
+    #[test]
+    fn test_nova_mpc_query_active_with_state() {
+        use crate::evm::precompiles::ChainStateProvider;
+        #[derive(Debug)]
+        struct ActiveMpc;
+        impl ChainStateProvider for ActiveMpc {
+            fn is_mpc_account(&self, _: &[u8; 20]) -> bool { true }
+            fn is_active_guardian(&self, _: &[u8; 20]) -> bool { false }
+            fn get_batch_clearing_price(&self, _: u64) -> Option<u64> { None }
+        }
+        let mut ctx_with_state = HostContext::new_with_state(
+            addr(1), addr(2), 1000, 0, std::sync::Arc::new(ActiveMpc),
+        );
+        let mut m = GasMeter::new(1_000_000);
+        let result = NovaHostFns::call(
+            &HostCallType::NovaMpcQuery,
+            &mut ctx_with_state,
+            &mut m,
+            &[],
+        ).unwrap();
         assert_eq!(result, b"mpc:active");
     }
 
+    /// VM-003: NoopChainStateProvider → "guardian:inactive"
     #[test]
-    fn test_nova_guardian_check() {
+    fn test_nova_guardian_check_inactive_by_default() {
         let mut ctx = ctx();
         let mut m = meter();
         let guardian = addr(50);
-        let result = NovaHostFns::call(&HostCallType::NovaGuardianCheck, &mut ctx, &mut m, guardian.as_bytes()).unwrap();
-        assert_eq!(result, b"guardian:active");
+        let result = NovaHostFns::call(
+            &HostCallType::NovaGuardianCheck,
+            &mut ctx,
+            &mut m,
+            guardian.as_bytes(),
+        ).unwrap();
+        assert_eq!(result, b"guardian:inactive");
     }
 
     #[test]
