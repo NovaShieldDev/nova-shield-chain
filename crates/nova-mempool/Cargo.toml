@@ -1,0 +1,52 @@
+[package]
+name        = "nova-mempool"
+description = "Nova Shield Chain — Şifreli MEV-proof Mempool (§5.2, §6.1.4)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+# Nova iç crate'ler
+nova-primitives = { workspace = true }
+nova-crypto     = { workspace = true }
+
+# Eğri kriptografisi (threshold ECDH Ristretto255)
+curve25519-dalek = { workspace = true }
+
+# Simetrik şifreleme (TX içeriği şifrelemek için AES-256-GCM)
+aes-gcm = { workspace = true }
+
+# Hash
+blake3 = { workspace = true }
+
+# Rastgele sayı üreteci
+rand      = { workspace = true }
+rand_core = { workspace = true }
+
+# Seri/Deserializasyon
+serde      = { workspace = true }
+serde_json = { workspace = true }
+borsh      = { workspace = true }
+hex        = { workspace = true }
+
+# Hata yönetimi
+thiserror = { workspace = true }
+
+# Eşzamanlı veri yapıları
+dashmap     = { workspace = true }
+parking_lot = { workspace = true }
+
+# Asenkron
+tokio = { workspace = true }
+
+# Güvenlik
+zeroize = { workspace = true }
+
+# Loglama
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+rand  = { workspace = true }

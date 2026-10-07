@@ -1,0 +1,40 @@
+[package]
+name        = "nova-account"
+description = "Nova Shield Chain — MPC-Native Hesap Modeli (§5.1)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-crypto     = { workspace = true }
+nova-mpc        = { workspace = true }
+
+# Serialization
+serde           = { version = "1.0", features = ["derive"] }
+serde_json      = { version = "1.0" }
+
+# Cryptography
+blake3          = { workspace = true }
+sha2            = { workspace = true }
+k256            = { workspace = true }
+rand            = { workspace = true }
+rand_core       = { workspace = true }
+zeroize         = { workspace = true }
+hex             = { workspace = true }
+
+# Concurrency
+parking_lot     = { workspace = true }
+
+# Error handling
+thiserror       = { workspace = true }
+anyhow          = { workspace = true }
+
+# Logging
+tracing         = { workspace = true }
+
+[dev-dependencies]
+rand            = { workspace = true }
+hex             = { workspace = true }

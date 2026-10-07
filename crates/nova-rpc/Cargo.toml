@@ -1,0 +1,24 @@
+[package]
+name        = "nova-rpc"
+description = "Nova Shield Chain — nova-rpc"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-zk         = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+blake3      = { workspace = true }
+dashmap     = { workspace = true }
+hex         = { workspace = true }
+parking_lot = { workspace = true }
+tokio       = { workspace = true }
+axum        = { workspace = true }
+
+[dev-dependencies]
+tower       = { version = "0.4", features = ["util"] }

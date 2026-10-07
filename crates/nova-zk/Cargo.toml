@@ -1,0 +1,38 @@
+[package]
+name        = "nova-zk"
+description = "Nova Shield Chain — ZK-Shield gizlilik katmanı (§5.7)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[features]
+# dev-keys: deterministik seed'li Groth16 key'leri etkinleştirir (test/geliştirme için)
+# Production build'inde KAPATILMALI: cargo build --release (dev-keys KAPATILI)
+# Şu an varsayılan olarak açık — tüm testler için
+default = ["dev-keys"]
+dev-keys = []
+
+[dependencies]
+nova-primitives = { workspace = true }
+blake3          = { workspace = true }
+dashmap         = { workspace = true }
+parking_lot     = { workspace = true }
+serde           = { workspace = true }
+thiserror       = { workspace = true }
+rand            = { workspace = true }
+rand_core       = { workspace = true }
+zeroize         = { workspace = true }
+hex             = { workspace = true }
+
+# ZK kanıt sistemi — arkworks BLS12-381 Groth16
+ark-ff          = { workspace = true }
+ark-ec          = { workspace = true }
+ark-std         = { workspace = true }
+ark-serialize   = { workspace = true }
+ark-bls12-381   = { workspace = true }
+ark-groth16     = { workspace = true }
+ark-relations   = { workspace = true }
+ark-r1cs-std    = { workspace = true }
+ark-snark       = { workspace = true }

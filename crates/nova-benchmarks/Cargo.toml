@@ -1,0 +1,71 @@
+[package]
+name        = "nova-benchmarks"
+description = "Nova Shield Chain — Benchmark Suite (criterion)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[lib]
+name = "nova_benchmarks"
+path = "src/lib.rs"
+
+[[bench]]
+name    = "zk_proof"
+harness = false
+
+[[bench]]
+name    = "mimc_hash"
+harness = false
+
+[[bench]]
+name    = "consensus"
+harness = false
+
+[[bench]]
+name    = "network"
+harness = false
+
+[[bench]]
+name    = "vm"
+harness = false
+
+[[bench]]
+name    = "mpc"
+harness = false
+
+[[bench]]
+name    = "auction"
+harness = false
+
+[[bench]]
+name    = "runtime_tps"
+harness = false
+
+[[bench]]
+name    = "state_cache"
+harness = false
+
+[[bench]]
+name    = "scalability"
+harness = false
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-zk         = { workspace = true }
+nova-consensus  = { workspace = true }
+nova-network    = { workspace = true }
+nova-vm         = { workspace = true }
+nova-mpc        = { workspace = true }
+nova-crypto     = { workspace = true }
+nova-auction    = { workspace = true }
+nova-runtime    = { workspace = true }
+blake3          = { workspace = true }
+rand            = { workspace = true }
+ark-bls12-381   = { workspace = true }
+ark-ff          = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+wat       = { workspace = true }

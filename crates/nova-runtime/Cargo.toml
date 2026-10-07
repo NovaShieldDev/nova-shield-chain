@@ -1,0 +1,30 @@
+[package]
+name        = "nova-runtime"
+description = "Nova Shield Chain — nova-runtime"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-consensus  = { workspace = true }
+nova-crypto     = { workspace = true }
+
+blake3      = { workspace = true }
+dashmap     = { workspace = true }
+rayon       = { workspace = true }
+parking_lot = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+rocksdb     = { workspace = true }
+bincode     = { workspace = true }
+
+# KZG blob commitment (EIP-4844 style)
+ark-bls12-381 = { workspace = true }
+ark-ec        = { workspace = true }
+ark-ff        = { workspace = true }
+ark-serialize = { workspace = true }
+sha2          = { workspace = true }

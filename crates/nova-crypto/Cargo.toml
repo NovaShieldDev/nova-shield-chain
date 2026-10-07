@@ -1,0 +1,68 @@
+[package]
+name        = "nova-crypto"
+description = "Nova Shield Chain — kriptografik primitifler (hash, imza, ZK, threshold)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+
+# Hash
+blake3      = { workspace = true }
+sha2        = { workspace = true }
+sha3        = { workspace = true }
+hmac        = { workspace = true }
+hkdf        = { workspace = true }
+
+# Eliptik eğri
+k256        = { workspace = true }
+curve25519-dalek = { workspace = true }
+ed25519-dalek    = { workspace = true }
+
+# BLS
+blst        = { workspace = true }
+
+# Post-quantum
+pqcrypto-dilithium = { workspace = true }
+pqcrypto-traits    = { workspace = true }
+
+# ZK
+ark-ff      = { workspace = true }
+ark-ec      = { workspace = true }
+ark-std     = { workspace = true }
+ark-serialize = { workspace = true }
+ark-bn254   = { workspace = true }
+ark-bls12-381 = { workspace = true }
+ark-groth16 = { workspace = true }
+ark-relations = { workspace = true }
+ark-r1cs-std  = { workspace = true }
+ark-snark     = { workspace = true }
+
+# Simetrik
+aes-gcm     = { workspace = true }
+chacha20poly1305 = { workspace = true }
+
+# Yardımcı
+serde       = { workspace = true }
+borsh       = { workspace = true }
+thiserror   = { workspace = true }
+rand        = { workspace = true }
+rand_core   = { workspace = true }
+zeroize     = { workspace = true }
+subtle      = { workspace = true }
+hex         = { workspace = true }
+
+[dev-dependencies]
+criterion   = { workspace = true }
+proptest    = { workspace = true }
+
+[[bench]]
+name    = "hash_bench"
+harness = false
+
+[[bench]]
+name    = "signature_bench"
+harness = false

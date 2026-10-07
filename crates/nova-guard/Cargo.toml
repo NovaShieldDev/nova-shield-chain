@@ -1,0 +1,18 @@
+[package]
+name        = "nova-guard"
+description = "Nova Shield Chain — nova-guard"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+blake3       = { workspace = true }
+dashmap      = { workspace = true }
+parking_lot  = { workspace = true }
+hex          = { workspace = true }

@@ -1,0 +1,31 @@
+[package]
+name        = "nova-network"
+description = "Nova Shield Chain — P2P ağ katmanı (§5.12)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-crypto     = { workspace = true }
+
+blake3            = { workspace = true }
+blst              = { workspace = true }
+x25519-dalek      = { workspace = true }
+ed25519-dalek     = { workspace = true }
+chacha20poly1305  = { workspace = true }
+hkdf              = { workspace = true }
+sha2              = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+thiserror         = { workspace = true }
+dashmap           = { workspace = true }
+parking_lot       = { workspace = true }
+crossbeam-channel = { workspace = true }
+rand                 = { workspace = true }
+hex                  = { version = "0.4" }
+reed-solomon-erasure = { workspace = true }
+tokio                = { workspace = true }
+async-trait          = { workspace = true }

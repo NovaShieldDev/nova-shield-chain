@@ -1,0 +1,17 @@
+[package]
+name        = "nova-guardian"
+description = "Nova Shield Chain — Guardian Marketplace ve İtibar Sistemi (§5.8)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+blake3          = { workspace = true }
+dashmap         = { workspace = true }
+parking_lot     = { workspace = true }
+serde           = { workspace = true }
+thiserror       = { workspace = true }
+hex             = { workspace = true }

@@ -1,0 +1,50 @@
+[package]
+name        = "nova-mpc"
+description = "Nova Shield Chain — CGGMP21 tabanlı threshold MPC hesap modeli"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+# §5.1  — MPC-Native Hesap Modeli
+# §6.1  — CGGMP21 protokolü, FROST-style pre-signing
+# §6.2  — Constant-time implementasyon (subtle)
+# §5.9.2 — Non-interactive pre-signing (guardian'ların aynı anda online olması gerekmez)
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-crypto     = { workspace = true }
+
+# Eliptik eğri — secp256k1
+k256            = { workspace = true }
+
+# Hash
+blake3          = { workspace = true }
+sha2            = { workspace = true }
+
+# Seri/Deserializasyon
+serde           = { workspace = true }
+borsh           = { workspace = true }
+hex             = { workspace = true }
+
+# Rastgelelik
+rand            = { workspace = true }
+rand_core       = { workspace = true }
+
+# Güvenlik — sabit-zaman ve bellek temizleme
+zeroize         = { workspace = true }
+subtle          = { workspace = true }
+
+# Hata yönetimi
+thiserror       = { workspace = true }
+
+# Simetrik şifreleme (P2P mesaj şifreleme için)
+aes-gcm         = { workspace = true }
+
+# KDF — HKDF-SHA256 (P2P anahtar türetme)
+hkdf            = { workspace = true }
+
+[dev-dependencies]
+proptest        = { workspace = true }
+rstest          = { workspace = true }

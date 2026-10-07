@@ -1,0 +1,23 @@
+[package]
+name        = "nova-vm"
+description = "Nova Shield Chain — nova-vm"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+blake3          = { workspace = true }
+dashmap         = { workspace = true }
+parking_lot     = { workspace = true }
+serde           = { workspace = true }
+thiserror       = { workspace = true }
+hex             = { workspace = true }
+sha3            = { workspace = true }
+wasmtime        = { workspace = true }
+revm            = { workspace = true }
+
+[dev-dependencies]
+wat             = { workspace = true }

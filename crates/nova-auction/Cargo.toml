@@ -1,0 +1,25 @@
+[package]
+name        = "nova-auction"
+description = "Nova Shield Chain — Sealed-Bid Batch Auction Execution Motoru (§5.3)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-crypto     = { workspace = true }
+nova-mempool    = { path = "../nova-mempool" }
+
+blake3     = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+borsh      = { workspace = true }
+hex        = { workspace = true }
+thiserror  = { workspace = true }
+parking_lot = { workspace = true }
+tracing    = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

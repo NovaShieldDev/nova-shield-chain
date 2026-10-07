@@ -1,0 +1,41 @@
+[package]
+name        = "nova-node"
+description = "Nova Shield Chain — nova-node"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives  = { workspace = true }
+nova-consensus   = { workspace = true }
+nova-network     = { workspace = true }
+nova-runtime     = { workspace = true }
+nova-vm          = { workspace = true }
+nova-mempool     = { workspace = true }
+nova-auction     = { workspace = true }
+nova-account     = { workspace = true }
+nova-inheritance = { workspace = true }
+nova-freeze      = { workspace = true }
+nova-guardian    = { workspace = true }
+nova-zk          = { workspace = true }
+nova-rpc         = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+thiserror        = { workspace = true }
+blake3           = { workspace = true }
+parking_lot      = { workspace = true }
+dashmap          = { workspace = true }
+hex              = { workspace = true }
+crossbeam-channel = { workspace = true }
+tokio             = { workspace = true }
+async-trait       = { workspace = true }
+
+[[bin]]
+name    = "nova-node"
+path    = "src/bin/nova-node.rs"
+
+[dev-dependencies]
+wat          = { workspace = true }
+x25519-dalek = { workspace = true }

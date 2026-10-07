@@ -1,0 +1,33 @@
+[package]
+name        = "nova-consensus"
+description = "Nova Shield Chain — Simplex BFT + DPoS konsensüs motoru (§5.10)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-crypto     = { workspace = true }
+
+# Kriptografi
+blake3      = "1"
+hex         = "0.4"
+schnorrkel  = { workspace = true }
+
+# Seri/deserializasyon
+serde  = { version = "1", features = ["derive"] }
+borsh  = { version = "1", features = ["derive"] }
+
+# Hata yönetimi
+thiserror = "1"
+
+# Thread-safe veri yapıları
+dashmap     = "6"
+parking_lot = "0.12"
+
+# Log
+tracing = "0.1"
+
+[dev-dependencies]

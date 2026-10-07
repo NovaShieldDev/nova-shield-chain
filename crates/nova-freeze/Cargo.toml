@@ -1,0 +1,22 @@
+[package]
+name        = "nova-freeze"
+description = "Nova Shield Chain — Emergency Freeze Protocol (§5.5)"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+authors.workspace    = true
+license.workspace    = true
+
+[dependencies]
+nova-primitives = { workspace = true }
+nova-account    = { workspace = true }
+nova-crypto     = { workspace = true }
+blake3          = { workspace = true }
+blst            = { workspace = true }
+borsh           = { workspace = true }
+dashmap         = { workspace = true }
+parking_lot     = { workspace = true }
+serde           = { workspace = true }
+thiserror       = { workspace = true }
+tracing         = { workspace = true }
+hex             = { workspace = true }
