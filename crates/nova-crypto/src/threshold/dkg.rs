@@ -195,7 +195,8 @@ pub fn dkg_round3_finalize(
     }
 
     let index = received_shares.len() as u8; // my_index
-    let sk_share = SecretKeyShare { index, value: sk_sum };
+    // NOVA-RED-CRYPTO-003: pub_key_share hesapla — DLEQ proof için gerekli.
+    let sk_share = SecretKeyShare::new(index, sk_sum);
     let threshold_pk = ThresholdPublicKey::from_bytes(pk_sum.compress().to_bytes());
 
     Ok((sk_share, threshold_pk, index))

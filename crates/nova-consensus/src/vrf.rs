@@ -315,10 +315,28 @@ impl BabeEngine {
         best.map(|(_, vid)| vid)
     }
 
-    /// Slot VRF çıktısını epoch randomness birikimine ekle
+    /// Slot VRF çıktısını epoch randomness birikimine ekle.
     ///
-    /// BABE: sonraki epoch randomness = XOR of all VRF outputs
-    pub fn accumulate_randomness(&mut self, vrf_output: &[u8; 32]) {
+    /// NOVA-RED-CRYPTO-001: Sadece doğrulanmış BabeSlotClaim kabul edilir.
+    /// Doğrulanmamış raw bytes ile epoch randomness manipülasyonunu engeller.
+    ///
+    /// BABE: sonraki epoch randomness = XOR of all verified VRF outputs
+    pub fn accumulate_randomness(&mut self, claim: &BabeSlotClaim) -> ConsensusResult<()> {
+        // Claim kriptografik olarak doğrulanmış mı? Sadece geçerli claim'ler kabul edilir.
+        self.verify_claim(claim)?;
+
+        for (i, byte) in claim.vrf_proof.output.iter().enumerate() {
+            self.next_epoch_randomness_acc[i] ^= byte;
+        }
+        self.processed_slots += 1;
+        Ok(())
+    }
+
+    /// Ham VRF çıktısı ile randomness birikimi — SADECE iç test/genesis kullanımı için.
+    ///
+    /// NOVA-RED-CRYPTO-001: Bu metod yalnızca güvenilir bağlamlarda (genesis setup,
+    /// test) çağrılmalıdır. Production'da `accumulate_randomness(&claim)` kullanın.
+    pub fn accumulate_randomness_raw(&mut self, vrf_output: &[u8; 32]) {
         for (i, byte) in vrf_output.iter().enumerate() {
             self.next_epoch_randomness_acc[i] ^= byte;
         }
@@ -507,15 +525,40 @@ mod tests {
         assert!(proposers_found > 0, "en az bir slot için proposer bulunmalı");
     }
 
-    // 11. Epoch randomness birikimi
+    // 11. Epoch randomness birikimi — doğrulanmış claim gerekli (NOVA-RED-CRYPTO-001)
     #[test]
     fn test_accumulate_randomness() {
         let mut engine = make_engine_with_validators(3);
         let initial_acc = engine.next_epoch_randomness_acc;
 
-        engine.accumulate_randomness(&[0xFFu8; 32]);
+        // Doğrulanmış bir claim bul
+        let mut found_claim = None;
+        for slot in 0..10_000u64 {
+            if let Some(claim) = engine.claim_slot(vid(1), SlotId(slot)) {
+                found_claim = Some(claim);
+                break;
+            }
+        }
+        let claim = found_claim.expect("en az bir slot claim edilebilmeli");
+        engine.accumulate_randomness(&claim).unwrap();
         assert_ne!(engine.next_epoch_randomness_acc, initial_acc);
         assert_eq!(engine.processed_slots(), 1);
+    }
+
+    /// NOVA-RED-CRYPTO-001: Doğrulanmamış claim reddedilmeli.
+    #[test]
+    fn test_accumulate_randomness_fake_claim_rejected() {
+        let mut engine = make_engine_with_validators(3);
+        // Sahte BabeSlotClaim (geçersiz VRF proof)
+        let fake_claim = BabeSlotClaim {
+            validator_id: vid(1),
+            slot: SlotId(0),
+            vrf_proof: VrfProof { output: [0xFFu8; 32], proof: [0u8; 64] },
+            authority_key: engine.pub_keys[&1],
+        };
+        let result = engine.accumulate_randomness(&fake_claim);
+        assert!(result.is_err(), "Sahte claim reddedilmeli");
+        assert_eq!(engine.processed_slots(), 0, "Slot sayacı artmamalı");
     }
 
     // 12. Epoch geçişi
@@ -524,7 +567,7 @@ mod tests {
         let mut engine = make_engine_with_validators(3);
 
         for i in 0..10u8 {
-            engine.accumulate_randomness(&[i; 32]);
+            engine.accumulate_randomness_raw(&[i; 32]);
         }
 
         let epoch0_end = engine.current_epoch().end_slot;
