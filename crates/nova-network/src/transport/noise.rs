@@ -241,6 +241,12 @@ impl NoiseSession {
             reason: "oturum anahtarı yok — el sıkışma tamamlanmadı".into(),
         })?;
 
+        // NOVA-RED-0011/0013/0014: Nonce taşması → keystream tekrarı → XOR leak önleme
+        if self.send_nonce == u64::MAX {
+            return Err(NetworkError::NoiseError {
+                reason: "nonce sayacı taştı — oturum yenilenmeli".into(),
+            });
+        }
         let nonce_bytes = self.make_nonce(self.send_nonce);
         self.send_nonce += 1;
 

@@ -126,10 +126,19 @@ impl Validator {
     }
 
     /// Unbonding başlat
-    pub fn begin_unbonding(&mut self, current_slot: SlotId) {
+    ///
+    /// NOVA-RED-0005 / NOVA-RED-CONSENSUS-001: Jailed validator unbonding ile jail cezasından kaçamaz.
+    /// Jailed validator unbond talebinde bulunursa `ValidatorJailed` hatası döndürülür.
+    pub fn begin_unbonding(&mut self, current_slot: SlotId) -> crate::errors::RuntimeResult<()> {
+        if self.jailed {
+            return Err(crate::errors::RuntimeError::ValidatorJailed {
+                until_slot: self.jailed_until_slot,
+            });
+        }
         self.status = BondStatus::Unbonding {
             completion_slot: current_slot.0 + UNBONDING_DURATION_SLOTS,
         };
+        Ok(())
     }
 
     /// Unbonding tamamlandı mı?
@@ -360,6 +369,20 @@ impl ConsKeyRotationManager {
             });
         }
 
+        // NOVA-RED-RUNTIME-005: Minimum rotasyon aralığı kontrolü
+        if let Some(last_slot) = self.history.iter()
+            .filter(|r| r.validator_id == validator_id)
+            .map(|r| r.rotation_slot)
+            .last()
+        {
+            let slots_since_last = current_slot.saturating_sub(last_slot);
+            if slots_since_last < self.min_rotation_interval_slots {
+                return Err(KeyRotationError::TooFrequent {
+                    remaining_slots: self.min_rotation_interval_slots - slots_since_last,
+                });
+            }
+        }
+
         // Aynı anahtar tekrar kullanılıyor mu?
         if self.current_keys.values().any(|k| k == &new_key) {
             return Err(KeyRotationError::KeyAlreadyInUse);
@@ -441,6 +464,10 @@ pub enum KeyRotationError {
 
     #[error("validator bulunamadı: {:?}", _0.0)]
     ValidatorNotFound(ValidatorId),
+
+    /// NOVA-RED-RUNTIME-005: Son rotasyondan bu yana minimum bekleme süresi geçmedi
+    #[error("son rotasyondan bu yana çok az slot geçti: kalan={remaining_slots}")]
+    TooFrequent { remaining_slots: u64 },
 }
 
 // ─── PHRAGMÉN SEÇİM ALGORİTMASI ──────────────────────────────────────────────
@@ -652,10 +679,24 @@ mod tests {
     fn test_validator_begin_unbonding() {
         let mut v = make_validator(1, MIN_VALIDATOR_STAKE_NSC);
         v.status = BondStatus::Bonded;
-        v.begin_unbonding(SlotId(1_000));
+        v.begin_unbonding(SlotId(1_000)).unwrap();
         assert!(v.status.is_unbonding());
         assert!(!v.is_unbonding_complete(SlotId(1_000)));
         assert!(v.is_unbonding_complete(SlotId(1_000 + UNBONDING_DURATION_SLOTS)));
+    }
+
+    /// NOVA-RED-0005: Jailed validator unbonding ile jail'den kaçamaz.
+    #[test]
+    fn test_jailed_validator_cannot_begin_unbonding() {
+        let mut v = make_validator(1, MIN_VALIDATOR_STAKE_NSC);
+        v.status = BondStatus::Bonded;
+        v.jailed = true;
+        v.jailed_until_slot = 99_999;
+        let err = v.begin_unbonding(SlotId(1_000)).unwrap_err();
+        assert!(
+            matches!(err, crate::errors::RuntimeError::ValidatorJailed { until_slot: 99_999 }),
+            "jailed validator unbonding başlatmamalı"
+        );
     }
 
     #[test]
@@ -751,6 +792,7 @@ mod tests {
     fn test_key_rotation_max_per_era() {
         let mut mgr = ConsKeyRotationManager::new();
         mgr.max_rotations_per_era = 2;
+        mgr.min_rotation_interval_slots = 0; // Interval testi bu testin konusu değil
         let mut fee_pool = KeyRotationFeePool::new();
         let vid = ValidatorId(1);
 
@@ -829,6 +871,7 @@ mod tests {
     #[test]
     fn test_key_history() {
         let mut mgr = ConsKeyRotationManager::new();
+        mgr.min_rotation_interval_slots = 0; // Interval testi bu testin konusu değil
         let mut fee_pool = KeyRotationFeePool::new();
         let vid = ValidatorId(1);
 
@@ -840,6 +883,25 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].rotation_slot, 100);
         assert_eq!(history[1].rotation_slot, 200);
+    }
+
+    /// NOVA-RED-RUNTIME-005: Minimum rotasyon aralığı uygulanmalı
+    #[test]
+    fn test_key_rotation_min_interval_enforced() {
+        let mut mgr = ConsKeyRotationManager::new();
+        mgr.min_rotation_interval_slots = 1_000;
+        let mut fee_pool = KeyRotationFeePool::new();
+        let vid = ValidatorId(1);
+
+        mgr.register_key(vid, make_pubkey(1));
+        mgr.rotate_key(vid, make_pubkey(2), 1_000, &mut fee_pool).unwrap();
+
+        // Sadece 100 slot sonra → TooFrequent
+        let err = mgr.rotate_key(vid, make_pubkey(3), 1_100, &mut fee_pool).unwrap_err();
+        assert!(matches!(err, KeyRotationError::TooFrequent { remaining_slots: 900 }));
+
+        // Yeterli slot geçtikten sonra → başarılı
+        mgr.rotate_key(vid, make_pubkey(3), 2_001, &mut fee_pool).unwrap();
     }
 
     // ─── Phragmén Testleri ────────────────────────────────────────────────────

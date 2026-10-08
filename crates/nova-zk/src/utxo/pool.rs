@@ -135,6 +135,24 @@ impl ShieldedPool {
         }
     }
 
+    /// Commitment'ı tree'ye ekle (ZK proof doğrulandıktan sonra çağrılır).
+    ///
+    /// ## NOVA-RED-ZK-009 Güvenlik Düzeltmesi
+    ///
+    /// Mint ve Transfer output commitment'larını pool'a kayıt eder.
+    pub fn commitment_tree_insert(&self, commitment: NoteCommitment) -> ZkResult<()> {
+        self.commitment_tree.insert(commitment).map(|_| ())
+    }
+
+    /// Nullifier'ı spent olarak işaretle (double-spend önleme).
+    ///
+    /// ## NOVA-RED-ZK-004 Güvenlik Düzeltmesi
+    ///
+    /// Transfer ve Burn işlemlerinde nullifier pool'a kaydedilmeli.
+    pub fn mark_nullifier_spent(&self, nullifier: Nullifier, slot: SlotId) -> ZkResult<()> {
+        self.nullifier_set.insert(nullifier, slot)
+    }
+
     /// Belirli bir asset'in toplam shielded değerini hesapla (yavaş — sadece audit için)
     pub fn total_shielded_value(&self, asset_id: &AssetId) -> u128 {
         self.notes

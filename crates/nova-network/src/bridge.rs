@@ -277,8 +277,10 @@ impl VoucherMinter {
             return Err(BridgeError::InsufficientBalance { user: sender.into(), denom: ibc_denom.into(), amount });
         }
         *balance -= amount;
-        let total = self.minted.get_mut(ibc_denom).unwrap();
-        *total -= amount;
+        // NOVA-RED-BRIDGE-001: unwrap() panik riski → graceful error
+        if let Some(total) = self.minted.get_mut(ibc_denom) {
+            *total = total.saturating_sub(amount);
+        }
         Ok(())
     }
 

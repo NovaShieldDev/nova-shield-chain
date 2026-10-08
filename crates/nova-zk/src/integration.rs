@@ -93,35 +93,39 @@ impl ZkShieldEngine {
             return Err(ZkError::InvalidProof);
         }
 
-        // Pool güncelleme (Mint için commitment ekle)
+        // Pool güncelleme
         match &tx.action {
             ShieldedAction::Mint(proof) => {
                 let commitment = proof.statement.commitment;
                 if self.pool.has_commitment(&commitment) {
                     return Err(ZkError::CommitmentAlreadyExists);
                 }
-                // Pool durumu güncellendi: gerçekte block executor bunu çağırır
+                // NOVA-RED-ZK-009: Mint commitment'ı pool'a ekle
+                self.pool.commitment_tree_insert(commitment)?;
             }
             ShieldedAction::Transfer(proof) => {
                 // NOVA-RED-ZK-002: Girdi commitment pool'da kayıtlı mı?
-                // Prover, R1CS'de in_cm == input_commitment_pub ile kanıtlamak zorunda.
-                // Burada on-chain pool.has_commitment() ile de doğrulanır →
-                // var olmayan commitment harcanamaz.
                 let input_cm = &proof.statement.input_commitment;
                 if !self.pool.has_commitment(input_cm) {
                     return Err(ZkError::CommitmentNotFound);
                 }
                 // Nullifier daha önce kullanıldı mı?
-                let nullifier = &proof.statement.input_nullifier;
-                if self.pool.is_spent(nullifier) {
+                let nullifier = proof.statement.input_nullifier;
+                if self.pool.is_spent(&nullifier) {
                     return Err(ZkError::NullifierAlreadySpent);
                 }
+                // NOVA-RED-ZK-004: Nullifier'ı spent olarak işaretle (double-spend önleme)
+                self.pool.mark_nullifier_spent(nullifier, tx.slot)?;
+                // Output commitment'ı pool'a ekle
+                self.pool.commitment_tree_insert(proof.statement.output_commitment)?;
             }
             ShieldedAction::Burn(proof) => {
-                let nullifier = &proof.statement.nullifier;
-                if self.pool.is_spent(nullifier) {
+                let nullifier = proof.statement.nullifier;
+                if self.pool.is_spent(&nullifier) {
                     return Err(ZkError::NullifierAlreadySpent);
                 }
+                // NOVA-RED-ZK-004: Nullifier'ı spent olarak işaretle
+                self.pool.mark_nullifier_spent(nullifier, tx.slot)?;
             }
         }
         Ok(())

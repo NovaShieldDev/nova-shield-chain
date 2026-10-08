@@ -177,6 +177,11 @@ impl SlotRevealState {
             });
         }
 
+        // NOVA-RED-MEMPOOL-003: can_reveal() kontrolü — erken reveal önleme
+        if !self.can_reveal() {
+            return Err(MempoolError::RevealWindowNotOpen(self.slot));
+        }
+
         if self.ordered_txs.is_empty() {
             let batch = RevealedBatch {
                 slot: self.slot,

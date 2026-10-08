@@ -200,13 +200,27 @@ impl XcmMessage {
                     hasher.update(&[0u8]);
                     hasher.update(&asset.amount.to_le_bytes());
                 }
-                XcmInstruction::DepositAsset { asset, .. } => {
+                XcmInstruction::DepositAsset { asset, beneficiary } => {
                     hasher.update(&[1u8]);
                     hasher.update(&asset.amount.to_le_bytes());
+                    // NOVA-RED-XCM-001: beneficiary dahil edilmeli
+                    if let Some(pid) = beneficiary.parachain_id {
+                        hasher.update(&pid.to_le_bytes());
+                    }
+                    if let Some(acc) = &beneficiary.account {
+                        hasher.update(acc);
+                    }
                 }
-                XcmInstruction::InitiateTransfer { assets, .. } => {
+                XcmInstruction::InitiateTransfer { dest, assets, .. } => {
                     hasher.update(&[2u8]);
                     for a in assets { hasher.update(&a.amount.to_le_bytes()); }
+                    // NOVA-RED-XCM-001: hedef zincir dahil edilmeli
+                    if let Some(pid) = dest.parachain_id {
+                        hasher.update(&pid.to_le_bytes());
+                    }
+                    if let Some(acc) = &dest.account {
+                        hasher.update(acc);
+                    }
                 }
                 XcmInstruction::BuyExecution { fees, weight_limit } => {
                     hasher.update(&[3u8]);
@@ -222,13 +236,27 @@ impl XcmMessage {
                     hasher.update(&[5u8]);
                     hasher.update(&asset.amount.to_le_bytes());
                 }
-                XcmInstruction::ReportHolding { query_id, .. } => {
+                XcmInstruction::ReportHolding { query_id, dest } => {
                     hasher.update(&[6u8]);
                     hasher.update(&query_id.to_le_bytes());
+                    // NOVA-RED-XCM-001: dest dahil edilmeli
+                    if let Some(pid) = dest.parachain_id {
+                        hasher.update(&pid.to_le_bytes());
+                    }
+                    if let Some(acc) = &dest.account {
+                        hasher.update(acc);
+                    }
                 }
-                XcmInstruction::DepositReserveAsset { asset, .. } => {
+                XcmInstruction::DepositReserveAsset { asset, dest } => {
                     hasher.update(&[7u8]);
                     hasher.update(&asset.amount.to_le_bytes());
+                    // NOVA-RED-XCM-001: dest dahil edilmeli
+                    if let Some(pid) = dest.parachain_id {
+                        hasher.update(&pid.to_le_bytes());
+                    }
+                    if let Some(acc) = &dest.account {
+                        hasher.update(acc);
+                    }
                 }
             }
         }

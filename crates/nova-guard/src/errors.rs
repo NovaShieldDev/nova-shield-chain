@@ -48,4 +48,8 @@ pub enum GuardError {
     /// NOVA-RED-GUARD-006: Yetkisiz authority set güncellemesi
     #[error("yetkisiz authority set güncellemesi: {caller} bu işlemi yapamaz")]
     UnauthorizedAuthoritySetUpdate { caller: String },
+
+    /// NOVA-RED-GUARD-004: Yetkisiz işlem — çağıran bu işlemi yapmaya yetkili değil
+    #[error("yetkisiz işlem: çağıran bu işlemi yapamaz")]
+    Unauthorized,
 }

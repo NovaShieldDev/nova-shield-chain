@@ -737,11 +737,17 @@ impl Dec {
         match product {
             Some(p) => Self(p / Self::PRECISION),
             None => {
-                // Overflow: büyük değerleri küçülterek çarp (hassasiyet kaybı kabul)
-                // Her ikisini PRECISION^(1/2) = 10^9 ile böl, sonucu PRECISION ile düzelt
-                let a = self.0 / 1_000_000_000;
-                let b = other.0 / 1_000_000_000;
-                Self(a * b / 1_000_000_000_000_000_000 * 1_000_000_000_000_000_000)
+                // NOVA-RED-PRIM-003: Overflow fallback sıfır döndürmesin.
+                // Yüksek-alçak bölümleme: (a/P_HALF) * (b/P_HALF) / P_HALF
+                // P_HALF = 10^9, P = 10^18
+                // Bu yaklaşım 1.0 × 1.0 = 1.0 sonucunu doğru verir.
+                const P_HALF: i128 = 1_000_000_000;
+                let a = self.0 / P_HALF;
+                let b = other.0 / P_HALF;
+                let result = a.saturating_mul(b)
+                    .checked_div(P_HALF)
+                    .unwrap_or(i128::MAX);
+                Self(result)
             }
         }
     }
@@ -853,7 +859,7 @@ impl MultiSignature {
         match self {
             Self::Ed25519(b) | Self::Sr25519(b) => b.len() == 64,
             Self::Ecdsa(b) => b.len() == 65,
-            Self::Dilithium3(b) => !b.is_empty(),
+            Self::Dilithium3(b) => b.len() == 3293, // NOVA-RED-PRIM-001: Dilithium3 = 3293 byte
             Self::AggregateBls(b) => b.len() == 96,
         }
     }

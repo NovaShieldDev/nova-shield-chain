@@ -2,6 +2,7 @@
 
 use crate::marketplace::listing::GuardianListing;
 use crate::registry::categories::GuardianCategory;
+use nova_primitives::constants::GUARDIAN_MIN_TRUST_SCORE;
 use serde::{Deserialize, Serialize};
 
 // ─── SearchFilter ─────────────────────────────────────────────────────────────
@@ -17,8 +18,15 @@ pub struct SearchFilter {
 }
 
 impl SearchFilter {
+    /// ## NOVA-RED-PRIM-002 Güvenlik Düzeltmesi
+    ///
+    /// Varsayılan min_trust_score = GUARDIAN_MIN_TRUST_SCORE (60).
+    /// Düşük güvenilirlikli guardian'lar otomatik filtrelenir.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            min_trust_score: Some(GUARDIAN_MIN_TRUST_SCORE as u32),
+            ..Self::default()
+        }
     }
 
     pub fn with_min_trust_score(mut self, score: u32) -> Self {

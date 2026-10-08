@@ -120,11 +120,21 @@ impl AutoPaymentScheduler {
     }
 
     /// Ödeme planını iptal et
-    pub fn cancel_schedule(&self, id: PaymentScheduleId) -> GuardianResult<()> {
-        self.schedules
+    ///
+    /// ## NOVA-RED-GUARDIAN-004 Güvenlik Düzeltmesi
+    ///
+    /// Yalnızca planın `payer`'ı iptal edebilir.
+    /// Başka bir adres çağırırsa `Unauthorized` hatası döner.
+    pub fn cancel_schedule(&self, caller: Address, id: PaymentScheduleId) -> GuardianResult<()> {
+        let mut entry = self.schedules
             .get_mut(&id)
-            .ok_or(GuardianError::ContractNotFound)
-            .map(|mut s| s.status = PaymentStatus::Cancelled)
+            .ok_or(GuardianError::ContractNotFound)?;
+        // NOVA-RED-GUARDIAN-004: sadece payer iptal edebilir
+        if entry.payer != caller {
+            return Err(GuardianError::Unauthorized);
+        }
+        entry.status = PaymentStatus::Cancelled;
+        Ok(())
     }
 
     /// Ödeme planını al
@@ -308,7 +318,9 @@ mod tests {
     fn test_cancel_schedule() {
         let scheduler = AutoPaymentScheduler::new();
         let id = scheduler.create_schedule(addr(1), addr(2), 50 * NSC, PERIOD, SlotId(0));
-        scheduler.cancel_schedule(id).unwrap();
+        // NOVA-RED-GUARDIAN-004: yalnızca payer iptal edebilir
+        assert!(scheduler.cancel_schedule(addr(2), id).is_err(), "payee iptal edememeli");
+        scheduler.cancel_schedule(addr(1), id).unwrap();
         let s = scheduler.get_schedule(id).unwrap();
         assert_eq!(s.status, PaymentStatus::Cancelled);
 

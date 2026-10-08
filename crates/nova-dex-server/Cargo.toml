@@ -1,0 +1,21 @@
+[package]
+name    = "nova-dex-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nova-dex-server"
+path = "src/main.rs"
+
+[dependencies]
+nova-dex = { path = "../nova-dex" }
+
+axum       = { workspace = true }
+tokio      = { workspace = true, features = ["full"] }
+serde      = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+tracing-subscriber = { workspace = true }
+tower-http = { version = "0.5", features = ["cors"] }
+blake3     = { workspace = true }
+hex        = { workspace = true }

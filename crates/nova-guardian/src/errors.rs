@@ -49,6 +49,10 @@ pub enum GuardianError {
 
     #[error("yetkisiz erişim: bu işlem için yetki yok")]
     Unauthorized,
+
+    /// NOVA-RED-PRIM-002: Trust score minimum gereksinimi karşılanmıyor
+    #[error("yetersiz trust score: gerekli={required}, mevcut={provided}")]
+    InsufficientTrustScore { required: u32, provided: u32 },
 }
 
 pub type GuardianResult<T> = Result<T, GuardianError>;

@@ -23,6 +23,8 @@ members = [
     "crates/nova-testing",
     "crates/nova-benchmarks",
     "crates/nova-security-audit",
+    "crates/nova-dex",
+    "crates/nova-dex-server",
 ]
 
 [workspace.package]
@@ -58,6 +60,8 @@ nova-rpc        = { path = "crates/nova-rpc" }
 nova-testing    = { path = "crates/nova-testing" }
 nova-benchmarks     = { path = "crates/nova-benchmarks" }
 nova-security-audit = { path = "crates/nova-security-audit" }
+nova-dex            = { path = "crates/nova-dex" }
+nova-dex-server     = { path = "crates/nova-dex-server" }
 
 # ─── Kriptografi ──────────────────────────────────────────────────────────────
 blake3          = { version = "1.5", features = ["rayon"] }

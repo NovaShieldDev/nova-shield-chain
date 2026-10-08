@@ -165,10 +165,18 @@ impl CrossChainInheritanceManager {
     }
 
     /// Planı tetikle
-    pub fn trigger_plan(&self, plan_id: u64, current_slot: u64) -> GuardResult<()> {
-        self.plans.get_mut(&plan_id)
-            .ok_or(GuardError::InheritancePlanNotFound)?
-            .trigger(current_slot)
+    ///
+    /// ## NOVA-RED-GUARD-004 Güvenlik Düzeltmesi
+    ///
+    /// Yalnızca planın sahibi (owner) tetikleyebilir.
+    pub fn trigger_plan(&self, caller: [u8; 20], plan_id: u64, current_slot: u64) -> GuardResult<()> {
+        let mut plan = self.plans.get_mut(&plan_id)
+            .ok_or(GuardError::InheritancePlanNotFound)?;
+        // NOVA-RED-GUARD-004: yalnızca plan sahibi tetikleyebilir
+        if plan.owner != caller {
+            return Err(GuardError::Unauthorized);
+        }
+        plan.trigger(current_slot)
     }
 
     /// Aktif planlar
@@ -277,7 +285,7 @@ mod tests {
     fn test_inheritance_manager_trigger() {
         let mgr = CrossChainInheritanceManager::new();
         let id = mgr.create_plan(owner(), vec![], 100);
-        mgr.trigger_plan(id, 1000).unwrap();
+        mgr.trigger_plan(owner(), id, 1000).unwrap();
 
         let plan = mgr.get_plan(id).unwrap();
         assert_eq!(plan.trigger_slot, Some(1000));

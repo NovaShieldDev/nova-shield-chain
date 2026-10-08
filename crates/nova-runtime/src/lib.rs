@@ -156,7 +156,7 @@ mod tests {
         assert!(bonded.status.is_bonded());
 
         // Unbonding başlat
-        pool.update(&ValidatorId(1), |v| v.begin_unbonding(SlotId(1_000)));
+        pool.update(&ValidatorId(1), |v| { let _ = v.begin_unbonding(SlotId(1_000)); });
         let unbonding = pool.get(&ValidatorId(1)).unwrap();
         assert!(unbonding.status.is_unbonding());
 

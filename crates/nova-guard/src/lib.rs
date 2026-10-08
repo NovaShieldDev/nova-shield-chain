@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(chains.len(), 4);
 
         // Trigger
-        mgr.trigger_plan(plan_id, 5000).unwrap();
+        mgr.trigger_plan(owner(), plan_id, 5000).unwrap();
         assert_eq!(mgr.triggered_plans().len(), 1);
     }
 
