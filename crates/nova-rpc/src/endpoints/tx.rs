@@ -4,6 +4,27 @@ use crate::errors::{RpcError, RpcResult};
 use crate::state::{ChainState, TxStatus};
 use serde_json::Value;
 
+/// NOVA-RED-RPC-002/003/004: secp256k1 ECDSA imza format doğrulaması.
+///
+/// İmza: r (32 B) + s (32 B) [+ v (1 B) recovery bit] = 64 veya 65 byte.
+/// Sadece format kontrolü yapılır (hex decode + uzunluk). Gerçek imza
+/// doğrulaması zincir/konsensüs katmanında gerçekleşir.
+fn validate_sig(sig_hex: &str) -> RpcResult<()> {
+    let hex_part = sig_hex.trim_start_matches("0x");
+    let bytes = hex::decode(hex_part).map_err(|_| RpcError::InvalidSignature {
+        reason: "imza hex decode hatası".into(),
+    })?;
+    if bytes.len() < 64 {
+        return Err(RpcError::InvalidSignature {
+            reason: format!(
+                "imza çok kısa: {} byte (secp256k1 r+s için en az 64 gerekli)",
+                bytes.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub struct TxHandler {
     state: ChainState,
 }
@@ -14,6 +35,9 @@ impl TxHandler {
     }
 
     /// nova_sendTransaction — işlem gönder
+    ///
+    /// NOVA-RED-RPC-004: `signature` alanı zorunlu ve geçerli secp256k1 formatında
+    /// olmalıdır. İmza yoksa veya çok kısaysa istek reddedilir.
     pub fn send_transaction(&self, params: &[Value]) -> RpcResult<Value> {
         let tx = params.first().ok_or_else(|| RpcError::InvalidParams {
             reason: "işlem nesnesi gerekli".into(),
@@ -23,6 +47,13 @@ impl TxHandler {
             .ok_or_else(|| RpcError::InvalidParams {
                 reason: "from alanı gerekli".into(),
             })?;
+
+        // NOVA-RED-RPC-004: İmza zorunlu — imzasız işlem reddedilir
+        let signature = tx.get("signature").and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError::InvalidSignature {
+                reason: "signature alanı zorunlu — işlem imzasız gönderilemez".into(),
+            })?;
+        validate_sig(signature)?;
 
         let to = tx.get("to").and_then(|v| v.as_str())
             .unwrap_or("0x0000000000000000000000000000000000000000");
@@ -123,6 +154,8 @@ mod tests {
 
     const ALICE: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const BOB: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    /// 65 byte geçerli format imza (r+s+v, 130 hex kar.)
+    const MOCK_SIG: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn send_tx(h: &TxHandler) -> String {
         let result = h.send_transaction(&[serde_json::json!({
@@ -130,6 +163,7 @@ mod tests {
             "to": BOB,
             "value": "0xde0b6b3a7640000",
             "gasPrice": "0x3b9aca00",
+            "signature": MOCK_SIG,
         })]).unwrap();
         result.as_str().unwrap().to_string()
     }
@@ -139,6 +173,50 @@ mod tests {
         let h = handler();
         let hash = send_tx(&h);
         assert!(hash.starts_with("0x"));
+    }
+
+    /// NOVA-RED-RPC-004: İmzasız işlem reddedilmeli
+    #[test]
+    fn test_send_transaction_no_signature_rejected() {
+        let h = handler();
+        let result = h.send_transaction(&[serde_json::json!({
+            "from": ALICE,
+            "to": BOB,
+            "value": "0xde0b6b3a7640000",
+        })]);
+        assert!(result.is_err(), "imzasız işlem reddedilmeli");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), crate::errors::INVALID_SIGNATURE);
+    }
+
+    /// NOVA-RED-RPC-004: Çok kısa imza reddedilmeli
+    #[test]
+    fn test_send_transaction_short_signature_rejected() {
+        let h = handler();
+        let result = h.send_transaction(&[serde_json::json!({
+            "from": ALICE,
+            "to": BOB,
+            "value": "0x1000",
+            "signature": "0xdeadbeef", // 4 byte — çok kısa
+        })]);
+        assert!(result.is_err(), "kısa imza reddedilmeli");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), crate::errors::INVALID_SIGNATURE);
+    }
+
+    /// NOVA-RED-RPC-004: Geçersiz hex imza reddedilmeli
+    #[test]
+    fn test_send_transaction_invalid_hex_signature_rejected() {
+        let h = handler();
+        let result = h.send_transaction(&[serde_json::json!({
+            "from": ALICE,
+            "to": BOB,
+            "value": "0x1000",
+            "signature": "0xGGGGGGGG", // geçersiz hex
+        })]);
+        assert!(result.is_err(), "geçersiz hex imza reddedilmeli");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), crate::errors::INVALID_SIGNATURE);
     }
 
     #[test]
@@ -194,7 +272,10 @@ mod tests {
     #[test]
     fn test_send_transaction_no_from() {
         let h = handler();
-        let result = h.send_transaction(&[serde_json::json!({"to": BOB})]);
+        let result = h.send_transaction(&[serde_json::json!({
+            "to": BOB,
+            "signature": MOCK_SIG,
+        })]);
         assert!(result.is_err());
     }
 }

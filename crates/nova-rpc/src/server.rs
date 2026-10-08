@@ -45,14 +45,19 @@ use axum::{
     Json,
     Router,
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+
+/// JSON-RPC body maksimum boyutu: 1 MB
+/// NOVA-RED-RPC-006: Sınırsız body → OOM/DoS engeli.
+const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 // ─── Paylaşılan durum ─────────────────────────────────────────────────────────
 
@@ -68,10 +73,12 @@ struct ServerState {
 
 /// IP başına rate limiting — her POST /  isteğinde çalışır
 ///
-/// İstemci IP'sini şu sırayla alır:
-/// 1. `X-Real-IP` başlığı (reverse proxy arkasında)
-/// 2. `X-Forwarded-For` başlığının ilk değeri
-/// 3. Fallback: `"127.0.0.1"` (test ortamı / doğrudan bağlantı)
+/// NOVA-RED-RPC-001: X-Forwarded-For/X-Real-IP spoofing koruması.
+/// İstemci IP'si şu mantıkla belirlenir:
+/// - `ConnectInfo<SocketAddr>` mevcutsa (TCP sunucu) → gerçek peer IP kullanılır.
+///   - Peer loopback (127.0.0.1 / ::1) ise reverse proxy → başlıklara güvenilir.
+///   - Peer harici ise → başlıklar yoksayılır, doğrudan TCP adresi kullanılır.
+/// - `ConnectInfo` yoksa (oneshot test modu) → başlıklara fallback.
 ///
 /// Limit aşılınca JSON-RPC 2.0 uyumlu `-32005` hata kodu döner.
 async fn rate_limit_middleware(
@@ -79,20 +86,49 @@ async fn rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    // IP çıkar (proxy başlıkları → fallback)
+    // NOVA-RED-RPC-001: ConnectInfo tabanlı güvenilir IP belirleme
     let ip = {
-        let headers = request.headers();
-        headers
-            .get("x-real-ip")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-            .or_else(|| {
+        let peer = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0);
+
+        match peer {
+            Some(addr) if addr.ip().is_loopback() => {
+                // Güvenilir reverse proxy (localhost) → başlıklara bak
+                let headers = request.headers();
                 headers
-                    .get("x-forwarded-for")
+                    .get("x-real-ip")
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-            })
-            .unwrap_or_else(|| "127.0.0.1".to_string())
+                    .or_else(|| {
+                        headers
+                            .get("x-forwarded-for")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+                    })
+                    .unwrap_or_else(|| addr.ip().to_string())
+            }
+            Some(addr) => {
+                // Doğrudan harici bağlantı → proxy başlıklarını yoksay
+                addr.ip().to_string()
+            }
+            None => {
+                // Test modu (ConnectInfo enjekte edilmemiş) → başlıklara fallback
+                let headers = request.headers();
+                headers
+                    .get("x-real-ip")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+                    .or_else(|| {
+                        headers
+                            .get("x-forwarded-for")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+                    })
+                    .unwrap_or_else(|| "127.0.0.1".to_string())
+            }
+        }
     };
 
     if !state.rate_limiter.check_and_record(&ip) {
@@ -192,10 +228,16 @@ impl HttpRpcServer {
 
     /// Sunucuyu çalıştır (blocking — tokio task içinde çağrılmalı)
     ///
-    /// Graceful shutdown için `run_until_cancelled()` kullan.
+    /// NOVA-RED-RPC-001: `into_make_service_with_connect_info` ile gerçek TCP peer
+    /// adresi her isteğe `ConnectInfo<SocketAddr>` extension olarak eklenir.
     pub async fn run(self) {
         let app = self.build_app();
-        axum::serve(self.listener, app).await.ok();
+        axum::serve(
+            self.listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .ok();
     }
 
     /// Graceful shutdown destekli çalıştır
@@ -206,10 +248,13 @@ impl HttpRpcServer {
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     ) {
         let app = self.build_app();
-        axum::serve(self.listener, app)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .ok();
+        axum::serve(
+            self.listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await
+        .ok();
     }
 
     /// Gerçek dinleme adresi
@@ -236,6 +281,8 @@ impl HttpRpcServer {
                 state.clone(),
                 rate_limit_middleware,
             ))
+            // NOVA-RED-RPC-006: Body boyut sınırı — 1 MB üzerindeki istekler reddedilir
+            .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
             .with_state(state)
     }
 }
@@ -264,6 +311,8 @@ mod tests {
                 server_state.clone(),
                 rate_limit_middleware,
             ))
+            // NOVA-RED-RPC-006: Test ortamında da body limit aktif
+            .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
             .with_state(server_state);
         (app, router)
     }
@@ -573,16 +622,18 @@ mod tests {
         assert!(json["result"].is_string());
     }
 
-    /// nova_sendTransaction testi
+    /// nova_sendTransaction testi — NOVA-RED-RPC-004: imza zorunlu
     #[tokio::test]
     async fn test_jsonrpc_send_transaction() {
         let (app, _) = make_app().await;
-        let (status, body) = post_json(
-            &app,
-            r#"{"jsonrpc":"2.0","method":"nova_sendTransaction","params":[{"from":"0xaaaa","to":"0xbbbb","value":"0x1000","gasPrice":"0x3b9aca00"}],"id":5}"#,
-        ).await;
+        // 65 byte (130 hex kar.) geçerli format imza
+        let sig = format!("0x{}", "aa".repeat(65));
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","method":"nova_sendTransaction","params":[{{"from":"0xaaaa","to":"0xbbbb","value":"0x1000","gasPrice":"0x3b9aca00","signature":"{sig}"}}],"id":5}}"#
+        );
+        let (status, resp) = post_json(&app, &body).await;
         assert_eq!(status, StatusCode::OK);
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(json["result"].as_str().unwrap().starts_with("0x"));
     }
 
@@ -598,5 +649,73 @@ mod tests {
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── NOVA-RED-RPC-006: Body boyut sınırı ──────────────────────────────────
+
+    /// 1 MB üzerindeki body reddedilmeli (OOM/DoS koruması)
+    #[tokio::test]
+    async fn test_body_too_large_rejected() {
+        let (app, _) = make_app().await;
+
+        // MAX_BODY_BYTES + 100 KB = ~1.1 MB
+        let huge_body = "X".repeat(MAX_BODY_BYTES + 100_000);
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/")
+            .header("content-type", "application/json")
+            .body(Body::from(huge_body))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "1 MB üzeri body 413 ile reddedilmeli"
+        );
+    }
+
+    /// Tam sınırda (1 MB - 1 byte) istek kabul edilmeli
+    #[tokio::test]
+    async fn test_body_at_limit_accepted() {
+        let (app, _) = make_app().await;
+
+        // MAX_BODY_BYTES - 1: sınır altında, JSON-RPC parse hatası verir ama 413 DEĞİL
+        let body_at_limit = "X".repeat(MAX_BODY_BYTES - 1);
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/")
+            .header("content-type", "application/json")
+            .body(Body::from(body_at_limit))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        // Payload Too Large DEĞİL (parse error veya bad request olabilir)
+        assert_ne!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Sınır altındaki body 413 almamalı"
+        );
+    }
+
+    // ── NOVA-RED-RPC-001: ConnectInfo fallback davranışı ────────────────────
+
+    /// Test modunda (ConnectInfo yok) başlıklara fallback çalışmalı
+    #[tokio::test]
+    async fn test_rpc001_no_connect_info_falls_back_to_headers() {
+        let (app, _) = make_app().await;
+
+        // ConnectInfo yok → X-Forwarded-For başlığından IP alınır
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", "203.0.113.1")
+            .body(Body::from(r#"{"jsonrpc":"2.0","method":"nova_chainId","params":[],"id":10}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

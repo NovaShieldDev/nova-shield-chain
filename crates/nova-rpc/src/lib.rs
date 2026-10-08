@@ -87,12 +87,14 @@ mod tests {
     fn test_rpc_tx_flow() {
         let r = router();
 
-        // TX gönder
+        // NOVA-RED-RPC-004: İmzalı TX gönder
+        let sig = "0x".to_string() + &"aa".repeat(65); // 65 byte (r+s+v) geçerli format
         let resp = call(&r, "nova_sendTransaction", serde_json::json!([{
             "from": "0xaaaa",
             "to": "0xbbbb",
             "value": "0x1000",
             "gasPrice": "0x3b9aca00",
+            "signature": sig,
         }]));
         assert!(resp.is_success());
         let hash = resp.result.unwrap().as_str().unwrap().to_string();
@@ -128,12 +130,14 @@ mod tests {
         assert!(resp.is_success());
         assert_eq!(resp.result.unwrap()["status"], serde_json::json!("created"));
 
-        // Heartbeat gönder
+        // NOVA-RED-RPC-002: Geçerli imzayla heartbeat gönder
+        let sig = "0x".to_string() + &"aa".repeat(65);
         let resp = call(&r, "nova_sendHeartbeat", serde_json::json!([{
             "account": "0xaaaa",
             "planId": 1,
-            "signature": "0xsig",
+            "signature": sig,
         }]));
+        assert!(resp.is_success(), "heartbeat başarılı olmalı");
         assert!(resp.result.unwrap()["accepted"].as_bool().unwrap());
     }
 
@@ -181,12 +185,12 @@ mod tests {
         }]));
         assert_eq!(resp.result.unwrap()["valid"], serde_json::json!(true));
 
-        // ZK TX gönder
-        let resp = call(&r, "nova_submitZkTx", serde_json::json!([{
+        // NOVA-RED-RPC-005: Mock kanıt reddedilmeli
+        let resp_zk = call(&r, "nova_submitZkTx", serde_json::json!([{
             "type": "full_shield",
-            "proof": "0xabcdef1234567890",
+            "proof": "0xabcdef1234567890", // 8 byte mock → reddedilmeli
         }]));
-        assert!(resp.result.unwrap()["proofVerified"].as_bool().unwrap());
+        assert!(!resp_zk.is_success(), "mock kanıt reddedilmeli");
     }
 
     #[test]

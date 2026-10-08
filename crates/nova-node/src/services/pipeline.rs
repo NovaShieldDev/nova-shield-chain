@@ -80,6 +80,13 @@ pub struct PipelineSlotResult {
 
 // ─── TxPipeline ───────────────────────────────────────────────────────────────
 
+/// NOVA-RED-NODE-009: Şifreli mempool için minimum BFT reveal threshold.
+///
+/// Threshold=1 iken tek validator tüm TX'leri açabilir → MEV front-running mümkün.
+/// Mainnet varsayılanı: 134 (= ceil(200 * 2/3) + 1, 200 validator için).
+/// Küçük test ağları için en az 2 tercih edilir.
+pub const MIN_REVEAL_THRESHOLD: u8 = 2;
+
 /// Tam TX pipeline — tüm protokol motorlarını koordine eder
 ///
 /// `dev_mode=true` ise şifreli mempool atlanır, TXler doğrudan çalıştırılır.
@@ -105,6 +112,9 @@ pub struct TxPipeline {
     dev_queue: Vec<(SlotId, RuntimeTx)>,
     /// Anlık slot
     current_slot: SlotId,
+    /// NOVA-RED-NODE-009: Şifreli TX açmak için gereken minimum validator share sayısı.
+    /// Tek validator'ın MEV front-running yapmasını önler.
+    reveal_threshold: u8,
 }
 
 impl TxPipeline {
@@ -126,6 +136,8 @@ impl TxPipeline {
             dev_mode,
             dev_queue: Vec::new(),
             current_slot: SlotId(0),
+            // NOVA-RED-NODE-009: Threshold=1 → MEV front-running. Min 2 validator share zorunlu.
+            reveal_threshold: MIN_REVEAL_THRESHOLD,
         }
     }
 
@@ -258,7 +270,9 @@ impl TxPipeline {
         slot: SlotId,
         encrypted_txs: Vec<EncryptedTx>,
     ) -> NodeResult<RevealedBatch> {
-        let mut state = SlotRevealState::new(encrypted_txs, 1).with_slot(slot);
+        // NOVA-RED-NODE-009: threshold=1 → tek validator MEV front-running yapabilir.
+        // self.reveal_threshold kullan (MIN_REVEAL_THRESHOLD=2).
+        let mut state = SlotRevealState::new(encrypted_txs, self.reveal_threshold).with_slot(slot);
         if state.can_reveal() {
             state.reveal_all().map_err(|e| NodeError::ServiceStartError {
                 service: "Reveal".into(),
@@ -533,6 +547,26 @@ mod tests {
         let p = make_pipeline();
         let stats = p.auction_stats();
         assert_eq!(stats.total_slots_processed, 0);
+    }
+
+    /// NOVA-RED-NODE-009: reveal_threshold varsayılan olarak MIN_REVEAL_THRESHOLD=2 olmalı
+    #[test]
+    fn test_node009_reveal_threshold_default_is_min() {
+        let p = make_pipeline();
+        assert_eq!(
+            p.reveal_threshold, MIN_REVEAL_THRESHOLD,
+            "Tek validator MEV front-running yapmasın: threshold en az {} olmalı",
+            MIN_REVEAL_THRESHOLD
+        );
+        assert!(p.reveal_threshold >= 2, "threshold=1 MEV açığı doğurur");
+    }
+
+    /// NOVA-RED-NODE-009: with_dev_mode(false) da threshold korunmalı
+    #[test]
+    fn test_node009_production_mode_threshold() {
+        let p = TxPipeline::with_dev_mode(make_state(), INITIAL_BASE_FEE, false);
+        assert_eq!(p.reveal_threshold, MIN_REVEAL_THRESHOLD);
+        assert!(!p.dev_mode);
     }
 
     #[test]

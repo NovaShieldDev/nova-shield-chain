@@ -28,6 +28,10 @@ blake3           = { workspace = true }
 parking_lot      = { workspace = true }
 dashmap          = { workspace = true }
 hex              = { workspace = true }
+k256             = { workspace = true }
+aes-gcm          = { workspace = true }
+zeroize          = { workspace = true }
+rand             = { workspace = true }
 crossbeam-channel = { workspace = true }
 tokio             = { workspace = true }
 async-trait       = { workspace = true }

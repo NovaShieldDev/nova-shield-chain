@@ -19,6 +19,7 @@ hex         = { workspace = true }
 parking_lot = { workspace = true }
 tokio       = { workspace = true }
 axum        = { workspace = true }
+ureq        = { workspace = true }
 
 [dev-dependencies]
 tower       = { version = "0.4", features = ["util"] }

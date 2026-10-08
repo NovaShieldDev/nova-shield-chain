@@ -14,6 +14,7 @@ pub const BLOCK_NOT_FOUND: i64 = -32002;
 pub const TX_NOT_FOUND: i64 = -32003;
 pub const GUARDIAN_NOT_FOUND: i64 = -32004;
 pub const INSUFFICIENT_BALANCE: i64 = -32005;
+/// NOVA-RED-RPC-002/003/004: İmza yokluğu veya format hatası
 pub const INVALID_SIGNATURE: i64 = -32006;
 
 #[derive(Debug, Error)]
@@ -47,6 +48,10 @@ pub enum RpcError {
 
     #[error("yetersiz bakiye")]
     InsufficientBalance,
+
+    /// NOVA-RED-RPC-002/003/004: İmza eksik veya geçersiz format
+    #[error("geçersiz imza: {reason}")]
+    InvalidSignature { reason: String },
 }
 
 impl RpcError {
@@ -62,6 +67,7 @@ impl RpcError {
             RpcError::TxNotFound { .. } => TX_NOT_FOUND,
             RpcError::GuardianNotFound => GUARDIAN_NOT_FOUND,
             RpcError::InsufficientBalance => INSUFFICIENT_BALANCE,
+            RpcError::InvalidSignature { .. } => INVALID_SIGNATURE,
         }
     }
 }

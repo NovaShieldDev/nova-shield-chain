@@ -1,7 +1,7 @@
 //! JSON-RPC method router — gelen isteği doğru handler'a yönlendir
 
 use crate::endpoints::{
-    AccountHandler, BatchHandler, ChainHandler, GuardianHandler, TxHandler, ZkHandler,
+    AccountHandler, BatchHandler, ChainHandler, DexHandler, GuardianHandler, TxHandler, ZkHandler,
 };
 use crate::errors::RpcError;
 use crate::state::ChainState;
@@ -15,6 +15,7 @@ pub struct RpcRouter {
     guardian: GuardianHandler,
     batch: BatchHandler,
     zk: ZkHandler,
+    dex: DexHandler,
 }
 
 impl RpcRouter {
@@ -26,6 +27,7 @@ impl RpcRouter {
             guardian: GuardianHandler::new(state.clone()),
             batch: BatchHandler::new(state.clone()),
             zk: ZkHandler::new(state),
+            dex: DexHandler::new(),
         }
     }
 
@@ -74,6 +76,18 @@ impl RpcRouter {
             "nova_submitZkTx" => self.zk.submit_zk_tx(params),
             "nova_generateProof" => self.zk.generate_proof(params),
             "nova_verifyProof" => self.zk.verify_proof(params),
+
+            // ── DEX proxy ─────────────────────────────────────────────────────
+            "nova_dex_health"          => self.dex.health(params),
+            "nova_dex_createPool"      => self.dex.create_pool(params),
+            "nova_dex_getPools"        => self.dex.get_pools(params),
+            "nova_dex_getPool"         => self.dex.get_pool(params),
+            "nova_dex_swap"            => self.dex.swap(params),
+            "nova_dex_addLiquidity"    => self.dex.add_liquidity(params),
+            "nova_dex_removeLiquidity" => self.dex.remove_liquidity(params),
+            "nova_dex_extendLock"      => self.dex.extend_lock(params),
+            "nova_dex_getPosition"     => self.dex.get_position(params),
+            "nova_dex_processPayouts"  => self.dex.process_payouts(params),
 
             _ => Err(RpcError::MethodNotFound { method: req.method.clone() }),
         };
@@ -176,8 +190,27 @@ mod tests {
         assert!(resp.is_success());
     }
 
+    /// NOVA-RED-RPC-004: İmzalı işlem kabul edilmeli
     #[test]
     fn test_router_send_transaction() {
+        let r = router();
+        // 65 byte geçerli format imza
+        let sig = "0x".to_string() + &"aa".repeat(65);
+        let resp = r.handle(req(
+            "nova_sendTransaction",
+            serde_json::json!([{
+                "from": "0xaaaa",
+                "to": "0xbbbb",
+                "value": "0x1000",
+                "signature": sig,
+            }]),
+        ));
+        assert!(resp.is_success());
+    }
+
+    /// NOVA-RED-RPC-004: İmzasız işlem reddedilmeli
+    #[test]
+    fn test_router_send_transaction_no_sig_rejected() {
         let r = router();
         let resp = r.handle(req(
             "nova_sendTransaction",
@@ -187,7 +220,7 @@ mod tests {
                 "value": "0x1000",
             }]),
         ));
-        assert!(resp.is_success());
+        assert!(!resp.is_success(), "imzasız işlem reddedilmeli");
     }
 
     #[test]
@@ -197,17 +230,19 @@ mod tests {
         assert!(resp.is_success());
     }
 
+    /// NOVA-RED-RPC-005: Mock kanıt artık reddedilmeli
     #[test]
-    fn test_router_submit_zk_tx() {
+    fn test_router_submit_zk_tx_mock_rejected() {
         let r = router();
         let resp = r.handle(req(
             "nova_submitZkTx",
             serde_json::json!([{
                 "type": "standard",
-                "proof": "0xabcdef1234567890",
+                "proof": "0xabcdef1234567890", // 8 byte — mock kanıt
             }]),
         ));
-        assert!(resp.is_success());
+        // NOVA-RED-RPC-005: Mock kanıt geçersiz boyut → hata
+        assert!(!resp.is_success(), "mock kanıt reddedilmeli");
     }
 
     #[test]

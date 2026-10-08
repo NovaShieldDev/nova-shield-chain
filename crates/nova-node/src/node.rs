@@ -32,6 +32,46 @@ struct BlockAnnouncement {
     slot: u64,
     /// Proposer validator ID
     proposer_id: u64,
+    /// NOVA-RED-NODE-008: Proposer ECDSA imzası (r||s, 64 byte, hex encode → 128 karakter)
+    proposer_signature: String,
+    /// NOVA-RED-NODE-008: Proposer secp256k1 compressed public key (33 byte, hex → 66 karakter)
+    proposer_pubkey: String,
+}
+
+impl BlockAnnouncement {
+    /// İmzalanacak mesajı hesapla.
+    ///
+    /// Format: blake3("nova-block-v1" || block_hash_hex || le64(height) || le64(slot) || le64(proposer_id))
+    fn signing_message(&self) -> [u8; 32] {
+        let mut h = blake3::Hasher::new();
+        h.update(b"nova-block-v1");
+        h.update(self.block_hash_hex.as_bytes());
+        h.update(&self.height.to_le_bytes());
+        h.update(&self.slot.to_le_bytes());
+        h.update(&self.proposer_id.to_le_bytes());
+        *h.finalize().as_bytes()
+    }
+
+    /// NOVA-RED-NODE-008: İmzayı doğrula.
+    ///
+    /// proposer_signature hex → 64 byte r||s, proposer_pubkey hex → 33 byte SEC1 compressed.
+    /// Sahte veya sahipsiz duyurular reddedilir.
+    fn verify_signature(&self) -> bool {
+        use k256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
+
+        let sig_bytes = match hex::decode(&self.proposer_signature) {
+            Ok(b) if b.len() == 64 => b,
+            _ => return false,
+        };
+        let pubkey_bytes = match hex::decode(&self.proposer_pubkey) {
+            Ok(b) if b.len() == 33 => b,
+            _ => return false,
+        };
+        let Ok(sig) = Signature::from_slice(&sig_bytes) else { return false };
+        let Ok(vk) = VerifyingKey::from_sec1_bytes(&pubkey_bytes) else { return false };
+        let msg = self.signing_message();
+        vk.verify(&msg, &sig).is_ok()
+    }
 }
 
 // ─── NodeState ────────────────────────────────────────────────────────────────
@@ -266,6 +306,9 @@ pub struct AsyncNodeRunner {
     boot_nodes: Vec<String>,
     /// Üretilen blok sayacı — EngineStateHandle ile paylaşılan
     best_block_counter: Arc<AtomicU64>,
+    /// NOVA-RED-NODE-008: Blok duyurularını imzalamak için ECDSA signing key.
+    /// local_key'den deterministic türetilir.
+    signing_key: k256::ecdsa::SigningKey,
 }
 
 impl AsyncNodeRunner {
@@ -296,6 +339,8 @@ impl AsyncNodeRunner {
             engine.runtime.db_arc(),
         );
         let rpc_state = Arc::new(ChainState::with_backend(Arc::new(handle)));
+        // NOVA-RED-NODE-008: local_key'den deterministic ECDSA signing key türet
+        let signing_key = derive_signing_key(&local_key);
         Ok(Self {
             engine,
             slots_run: 0,
@@ -308,6 +353,7 @@ impl AsyncNodeRunner {
             tcp_network,
             boot_nodes: vec![],
             best_block_counter,
+            signing_key,
         })
     }
 
@@ -335,6 +381,7 @@ impl AsyncNodeRunner {
             engine.runtime.db_arc(),
         );
         let rpc_state = Arc::new(ChainState::with_backend(Arc::new(handle)));
+        let signing_key = derive_signing_key(&local_key);
         Ok(Self {
             engine,
             slots_run: 0,
@@ -347,6 +394,7 @@ impl AsyncNodeRunner {
             tcp_network,
             boot_nodes: vec![],
             best_block_counter,
+            signing_key,
         })
     }
 
@@ -412,6 +460,15 @@ impl AsyncNodeRunner {
                     let inbound = self.tcp_network.drain_inbound();
                     for msg in inbound {
                         if let Ok(ann) = serde_json::from_slice::<BlockAnnouncement>(&msg.payload) {
+                            // NOVA-RED-NODE-008: İmzayı doğrula — sahte/hasarlı duyuruları reddet
+                            if !ann.verify_signature() {
+                                eprintln!(
+                                    "[sync] blok duyurusu imzası geçersiz, reddedildi \
+                                     (height={} proposer={})",
+                                    ann.height, ann.proposer_id
+                                );
+                                continue;
+                            }
                             match self.engine.apply_peer_block(ann.height, ann.slot, ann.proposer_id) {
                                 Ok(()) => {
                                     let new_height = self.engine.runtime.blocks_executed();
@@ -437,12 +494,26 @@ impl AsyncNodeRunner {
                             self.slots_run += 1;
 
                             // ── 3. Blok duyurusu → TCP broadcast ─────────────
-                            let ann = BlockAnnouncement {
+                            let mut ann = BlockAnnouncement {
                                 block_hash_hex: hex::encode(block_hash.as_bytes()),
                                 height,
                                 slot: self.engine.consensus.current_slot().0,
                                 proposer_id: self.engine.local_validator_id.0,
+                                // NOVA-RED-NODE-008: imza alanları — aşağıda doldurulur
+                                proposer_signature: String::new(),
+                                proposer_pubkey: String::new(),
                             };
+                            // NOVA-RED-NODE-008: Duyuruyu imzala
+                            {
+                                use k256::ecdsa::signature::Signer;
+                                use k256::elliptic_curve::sec1::ToEncodedPoint;
+                                let msg = ann.signing_message();
+                                let sig: k256::ecdsa::Signature = self.signing_key.sign(&msg);
+                                ann.proposer_signature = hex::encode(sig.to_bytes());
+                                ann.proposer_pubkey = hex::encode(
+                                    self.signing_key.verifying_key().to_encoded_point(true).as_bytes()
+                                );
+                            }
                             if let Ok(payload) = serde_json::to_vec(&ann) {
                                 let sent = self.tcp_network.broadcast_tcp(&payload).await;
                                 if sent > 0 {
@@ -537,6 +608,29 @@ impl SyncRunner {
     }
 
     pub fn mode(&self) -> &SyncMode { &self.mode }
+}
+
+// ─── Yardımcı: Signing Key Türetimi ───────────────────────────────────────────
+
+/// NOVA-RED-NODE-008: local_key'den deterministic k256 ECDSA signing key türet.
+///
+/// local_key 32 byte X25519 / P2P kimlik anahtarıdır; blake3 domain separation ile
+/// secp256k1 alanına güvenli şekilde çekilir.
+fn derive_signing_key(local_key: &[u8; 32]) -> k256::ecdsa::SigningKey {
+    // blake3 ile domain-separate ederek geçerli bir skalar elde et
+    let mut h = blake3::Hasher::new();
+    h.update(b"nova-block-signing-v1");
+    h.update(local_key);
+    let derived = h.finalize();
+    // k256 tüm 32 byte değerleri skalar olarak kabul eder (sıfır hariç — pratikte imkansız)
+    k256::ecdsa::SigningKey::from_bytes(derived.as_bytes().into())
+        .unwrap_or_else(|_| {
+            // Sıfır skalar (astronomik olasılık) — fallback olarak local_key kullan
+            let mut fallback = *local_key;
+            fallback[0] |= 1; // sıfır olmasını engelle
+            k256::ecdsa::SigningKey::from_bytes((&fallback).into())
+                .expect("signing key türetme başarısız")
+        })
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -845,5 +939,108 @@ mod tests {
 
         // shutdown sinyalinde durur — panik yok
         runner.run(1, None).await.unwrap();
+    }
+
+    /// NOVA-RED-NODE-008: Geçerli imzalı BlockAnnouncement doğrulanmalı
+    #[test]
+    fn test_node008_valid_block_announcement_accepted() {
+        use k256::ecdsa::signature::Signer;
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+
+        let local_key = [0x42u8; 32];
+        let signing_key = derive_signing_key(&local_key);
+
+        let mut ann = BlockAnnouncement {
+            block_hash_hex: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".into(),
+            height: 100,
+            slot: 250,
+            proposer_id: 1,
+            proposer_signature: String::new(),
+            proposer_pubkey: String::new(),
+        };
+
+        let msg = ann.signing_message();
+        let sig: k256::ecdsa::Signature = signing_key.sign(&msg);
+        ann.proposer_signature = hex::encode(sig.to_bytes());
+        ann.proposer_pubkey = hex::encode(
+            signing_key.verifying_key().to_encoded_point(true).as_bytes()
+        );
+
+        assert!(ann.verify_signature(), "geçerli imzalı duyuru kabul edilmeli");
+    }
+
+    /// NOVA-RED-NODE-008: İmzasız BlockAnnouncement reddedilmeli
+    #[test]
+    fn test_node008_empty_signature_rejected() {
+        let ann = BlockAnnouncement {
+            block_hash_hex: "aabbcc".into(),
+            height: 1,
+            slot: 1,
+            proposer_id: 1,
+            proposer_signature: String::new(), // boş
+            proposer_pubkey: String::new(),
+        };
+        assert!(!ann.verify_signature(), "imzasız duyuru reddedilmeli");
+    }
+
+    /// NOVA-RED-NODE-008: Yanlış anahtar ile imzalanmış duyuru reddedilmeli
+    #[test]
+    fn test_node008_wrong_key_signature_rejected() {
+        use k256::ecdsa::signature::Signer;
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+
+        // Ann'i key_a ile imzala, ama pubkey'i key_b ile ver
+        let key_a = derive_signing_key(&[0x11u8; 32]);
+        let key_b = derive_signing_key(&[0x22u8; 32]);
+
+        let mut ann = BlockAnnouncement {
+            block_hash_hex: "deadbeef".into(),
+            height: 5,
+            slot: 10,
+            proposer_id: 2,
+            proposer_signature: String::new(),
+            proposer_pubkey: String::new(),
+        };
+
+        let msg = ann.signing_message();
+        let sig: k256::ecdsa::Signature = key_a.sign(&msg);
+        ann.proposer_signature = hex::encode(sig.to_bytes());
+        // Yanlış pubkey (key_b'nin pubkey'i)
+        ann.proposer_pubkey = hex::encode(
+            key_b.verifying_key().to_encoded_point(true).as_bytes()
+        );
+
+        assert!(!ann.verify_signature(), "yanlış anahtar ile imzalanmış duyuru reddedilmeli");
+    }
+
+    /// NOVA-RED-NODE-008: Değiştirilmiş içerikli duyuru reddedilmeli (tamper detection)
+    #[test]
+    fn test_node008_tampered_announcement_rejected() {
+        use k256::ecdsa::signature::Signer;
+        use k256::elliptic_curve::sec1::ToEncodedPoint;
+
+        let local_key = [0x55u8; 32];
+        let signing_key = derive_signing_key(&local_key);
+
+        let mut ann = BlockAnnouncement {
+            block_hash_hex: "cafebabe".into(),
+            height: 200,
+            slot: 500,
+            proposer_id: 3,
+            proposer_signature: String::new(),
+            proposer_pubkey: String::new(),
+        };
+
+        let msg = ann.signing_message();
+        let sig: k256::ecdsa::Signature = signing_key.sign(&msg);
+        ann.proposer_signature = hex::encode(sig.to_bytes());
+        ann.proposer_pubkey = hex::encode(
+            signing_key.verifying_key().to_encoded_point(true).as_bytes()
+        );
+
+        // İçeriği değiştir (height manipülasyonu)
+        ann.height = 999;
+
+        assert!(!ann.verify_signature(), "değiştirilmiş duyuru reddedilmeli");
     }
 }

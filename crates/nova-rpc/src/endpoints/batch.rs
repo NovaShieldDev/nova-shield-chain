@@ -4,6 +4,23 @@ use crate::errors::{RpcError, RpcResult};
 use crate::state::ChainState;
 use serde_json::Value;
 
+/// NOVA-RED-RPC-003: secp256k1 ECDSA imza format doğrulaması (en az 64 byte).
+fn validate_sig(sig_hex: &str) -> RpcResult<()> {
+    let hex_part = sig_hex.trim_start_matches("0x");
+    let bytes = hex::decode(hex_part).map_err(|_| RpcError::InvalidSignature {
+        reason: "imza hex decode hatası".into(),
+    })?;
+    if bytes.len() < 64 {
+        return Err(RpcError::InvalidSignature {
+            reason: format!(
+                "imza çok kısa: {} byte (secp256k1 r+s için en az 64 gerekli)",
+                bytes.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub struct BatchHandler {
     state: ChainState,
 }
@@ -81,12 +98,33 @@ impl BatchHandler {
     }
 
     /// nova_cancelOrder — emir iptal
+    ///
+    /// NOVA-RED-RPC-003: Herkes başkasının emrini iptal edemez.
+    /// `caller` ve `signature` alanları zorunludur. Caller ownership (imza
+    /// doğrulaması) format düzeyinde kontrol edilir; tam ECDSA doğrulaması
+    /// konsensüs katmanında gerçekleşir.
     pub fn cancel_order(&self, params: &[Value]) -> RpcResult<Value> {
-        let order_id = params.first()
-            .and_then(|v| v.as_str())
+        let req = params.first().ok_or_else(|| RpcError::InvalidParams {
+            reason: "iptal isteği nesnesi gerekli (orderId, caller, signature)".into(),
+        })?;
+
+        let order_id = req.get("orderId").and_then(|v| v.as_str())
             .ok_or_else(|| RpcError::InvalidParams {
                 reason: "orderId gerekli".into(),
             })?;
+
+        // NOVA-RED-RPC-003: Caller kimliği zorunlu
+        let _caller = req.get("caller").and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError::InvalidParams {
+                reason: "caller alanı zorunlu — kimin iptal ettiği bilinmeli".into(),
+            })?;
+
+        // NOVA-RED-RPC-003: İmza zorunlu ve geçerli formatta olmalı
+        let signature = req.get("signature").and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError::InvalidSignature {
+                reason: "signature alanı zorunlu — iptal imzasız gönderilemez".into(),
+            })?;
+        validate_sig(signature)?;
 
         Ok(serde_json::json!({
             "orderId": order_id,
@@ -163,11 +201,56 @@ mod tests {
         assert_eq!(result["status"], serde_json::json!("pending"));
     }
 
+    /// 65 byte geçerli format imza
+    const MOCK_SIG: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// NOVA-RED-RPC-003: Geçerli caller + imzayla iptal kabul edilmeli
     #[test]
     fn test_cancel_order() {
         let h = handler();
-        let result = h.cancel_order(&[serde_json::json!("0xorderid123")]).unwrap();
+        let result = h.cancel_order(&[serde_json::json!({
+            "orderId": "0xorderid123",
+            "caller": "0xaaaa",
+            "signature": MOCK_SIG,
+        })]).unwrap();
         assert_eq!(result["cancelled"], serde_json::json!(true));
+        assert_eq!(result["orderId"], serde_json::json!("0xorderid123"));
+    }
+
+    /// NOVA-RED-RPC-003: İmzasız iptal reddedilmeli
+    #[test]
+    fn test_cancel_order_no_signature_rejected() {
+        let h = handler();
+        let result = h.cancel_order(&[serde_json::json!({
+            "orderId": "0xorderid123",
+            "caller": "0xaaaa",
+        })]);
+        assert!(result.is_err(), "imzasız iptal reddedilmeli");
+        assert_eq!(result.unwrap_err().code(), crate::errors::INVALID_SIGNATURE);
+    }
+
+    /// NOVA-RED-RPC-003: Caller olmadan iptal reddedilmeli
+    #[test]
+    fn test_cancel_order_no_caller_rejected() {
+        let h = handler();
+        let result = h.cancel_order(&[serde_json::json!({
+            "orderId": "0xorderid123",
+            "signature": MOCK_SIG,
+        })]);
+        assert!(result.is_err(), "caller olmadan iptal reddedilmeli");
+    }
+
+    /// NOVA-RED-RPC-003: Kısa imzayla iptal reddedilmeli
+    #[test]
+    fn test_cancel_order_short_signature_rejected() {
+        let h = handler();
+        let result = h.cancel_order(&[serde_json::json!({
+            "orderId": "0xorderid123",
+            "caller": "0xaaaa",
+            "signature": "0xdeadbeef", // 4 byte — çok kısa
+        })]);
+        assert!(result.is_err(), "kısa imza reddedilmeli");
+        assert_eq!(result.unwrap_err().code(), crate::errors::INVALID_SIGNATURE);
     }
 
     #[test]

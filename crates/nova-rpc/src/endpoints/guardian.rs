@@ -4,6 +4,23 @@ use crate::errors::{RpcError, RpcResult};
 use crate::state::ChainState;
 use serde_json::Value;
 
+/// NOVA-RED-RPC-002: secp256k1 ECDSA imza format doğrulaması (en az 64 byte).
+fn validate_sig(sig_hex: &str) -> RpcResult<()> {
+    let hex_part = sig_hex.trim_start_matches("0x");
+    let bytes = hex::decode(hex_part).map_err(|_| RpcError::InvalidSignature {
+        reason: "imza hex decode hatası".into(),
+    })?;
+    if bytes.len() < 64 {
+        return Err(RpcError::InvalidSignature {
+            reason: format!(
+                "imza çok kısa: {} byte (secp256k1 r+s için en az 64 gerekli)",
+                bytes.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub struct GuardianHandler {
     state: ChainState,
 }
@@ -90,6 +107,9 @@ impl GuardianHandler {
     }
 
     /// nova_sendHeartbeat — heartbeat gönder
+    ///
+    /// NOVA-RED-RPC-002: `signature` alanı zorunludur. Sahte/imzasız heartbeat
+    /// gönderilerek kalıtım zaman sayacı sıfırlanamaz.
     pub fn send_heartbeat(&self, params: &[Value]) -> RpcResult<Value> {
         let hb = params.first().ok_or_else(|| RpcError::InvalidParams {
             reason: "heartbeat nesnesi gerekli".into(),
@@ -104,6 +124,13 @@ impl GuardianHandler {
             .ok_or_else(|| RpcError::InvalidParams {
                 reason: "planId alanı gerekli".into(),
             })?;
+
+        // NOVA-RED-RPC-002: İmza zorunlu ve geçerli formatta olmalı
+        let signature = hb.get("signature").and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError::InvalidSignature {
+                reason: "signature alanı zorunlu — heartbeat imzasız gönderilemez".into(),
+            })?;
+        validate_sig(signature)?;
 
         Ok(serde_json::json!({
             "account": account,
@@ -224,16 +251,45 @@ mod tests {
         assert!(result["planId"].as_u64().unwrap() > 0);
     }
 
+    /// 65 byte geçerli format imza (r+s+v)
+    const MOCK_SIG: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// NOVA-RED-RPC-002: Geçerli imzayla heartbeat kabul edilmeli
     #[test]
     fn test_send_heartbeat() {
         let h = handler();
         let result = h.send_heartbeat(&[serde_json::json!({
             "account": "0xaaaa",
             "planId": 42,
-            "signature": "0xsig",
+            "signature": MOCK_SIG,
         })]).unwrap();
         assert_eq!(result["accepted"], serde_json::json!(true));
         assert_eq!(result["planId"], serde_json::json!(42));
+    }
+
+    /// NOVA-RED-RPC-002: İmzasız heartbeat reddedilmeli
+    #[test]
+    fn test_send_heartbeat_no_signature_rejected() {
+        let h = handler();
+        let result = h.send_heartbeat(&[serde_json::json!({
+            "account": "0xaaaa",
+            "planId": 42,
+        })]);
+        assert!(result.is_err(), "imzasız heartbeat reddedilmeli");
+        assert_eq!(result.unwrap_err().code(), crate::errors::INVALID_SIGNATURE);
+    }
+
+    /// NOVA-RED-RPC-002: Çok kısa imzayla heartbeat reddedilmeli
+    #[test]
+    fn test_send_heartbeat_short_signature_rejected() {
+        let h = handler();
+        let result = h.send_heartbeat(&[serde_json::json!({
+            "account": "0xaaaa",
+            "planId": 42,
+            "signature": "0xdeadbeef", // 4 byte — çok kısa
+        })]);
+        assert!(result.is_err(), "kısa imza reddedilmeli");
+        assert_eq!(result.unwrap_err().code(), crate::errors::INVALID_SIGNATURE);
     }
 
     #[test]

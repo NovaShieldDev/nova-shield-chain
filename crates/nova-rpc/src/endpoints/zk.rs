@@ -47,33 +47,39 @@ impl ZkHandler {
             reason: "proof hex decode hatası".into(),
         })?;
 
-        // Gerçek Groth16 kanıtı: 192 byte (BLS12-381)
-        let is_real_proof = proof_bytes.len() == GROTH16_PROOF_SIZE;
+        // NOVA-RED-RPC-005: Gerçek Groth16 kanıtı zorunlu — mock kanıt reddedilir.
+        // Groth16 BLS12-381: π_A (G1, 48 B) + π_B (G2, 96 B) + π_C (G1, 48 B) = 192 byte
+        if proof_bytes.len() != GROTH16_PROOF_SIZE {
+            return Err(RpcError::InvalidParams {
+                reason: format!(
+                    "ZK kanıtı geçersiz boyut: {} byte, {} byte (Groth16 BLS12-381) gerekli",
+                    proof_bytes.len(),
+                    GROTH16_PROOF_SIZE
+                ),
+            });
+        }
 
-        let proof_verified = if is_real_proof {
-            // circuit türünü belirle
-            let circuit_type = parse_circuit_type(tx.get("circuitType").and_then(|v| v.as_str()));
-            let pub_inputs = parse_public_inputs(tx.get("publicInputs"));
+        // Gerçek Groth16 doğrulama
+        let circuit_type = parse_circuit_type(tx.get("circuitType").and_then(|v| v.as_str()));
+        let pub_inputs = parse_public_inputs(tx.get("publicInputs"));
 
-            let zk_proof = Groth16Proof {
-                proof_bytes,
-                public_inputs: pub_inputs,
-                circuit_type,
-            };
-
-            zk_proof.verify_groth16().map_err(|e| RpcError::InternalError {
-                reason: format!("ZK doğrulama hatası: {:?}", e),
-            })?
-        } else {
-            // Mock kanıt (64 byte) — test modu; en az 4 byte olmalı
-            proof_bytes.len() >= 4
+        let zk_proof = Groth16Proof {
+            proof_bytes,
+            public_inputs: pub_inputs,
+            circuit_type,
         };
+
+        let proof_verified = zk_proof.verify_groth16().map_err(|e| RpcError::InternalError {
+            reason: format!("ZK doğrulama hatası: {:?}", e),
+        })?;
 
         if !proof_verified {
             return Err(RpcError::InvalidParams {
-                reason: "ZK kanıtı geçersiz".into(),
+                reason: "ZK kanıtı doğrulanmadı".into(),
             });
         }
+
+        let is_real_proof = true;
 
         let mut h = blake3::Hasher::new();
         h.update(b"nova-zk-tx");
@@ -267,36 +273,57 @@ mod tests {
         ZkHandler::new(ChainState::new())
     }
 
+    /// NOVA-RED-RPC-005: 8 byte mock kanıt reddedilmeli (geçersiz boyut)
     #[test]
-    fn test_submit_zk_tx_standard() {
+    fn test_submit_zk_tx_standard_mock_rejected() {
         let h = handler();
         let result = h.submit_zk_tx(&[serde_json::json!({
             "type": "standard",
-            "proof": "0xabcdef1234567890",
+            "proof": "0xabcdef1234567890", // 8 byte — mock kanıt
             "sender": "0xaaaa",
-        })]).unwrap();
-        assert_eq!(result["proofVerified"], serde_json::json!(true));
-        assert_eq!(result["gasUsed"], serde_json::json!("0x5208")); // 21000
+        })]);
+        assert!(result.is_err(), "mock kanıt reddedilmeli");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("geçersiz boyut"), "hata boyut hatası olmalı");
     }
 
+    /// NOVA-RED-RPC-005: full_shield mock kanıt reddedilmeli
     #[test]
-    fn test_submit_zk_tx_full_shield() {
+    fn test_submit_zk_tx_full_shield_mock_rejected() {
         let h = handler();
         let result = h.submit_zk_tx(&[serde_json::json!({
             "type": "full_shield",
-            "proof": "0xabcdef1234567890",
-        })]).unwrap();
-        assert_eq!(result["gasUsed"], serde_json::json!("0x30d40")); // 200000
+            "proof": "0xabcdef1234567890", // 8 byte — mock kanıt
+        })]);
+        assert!(result.is_err(), "full_shield mock kanıt reddedilmeli");
     }
 
+    /// NOVA-RED-RPC-005: semi_shield mock kanıt reddedilmeli
     #[test]
-    fn test_submit_zk_tx_semi_shield() {
+    fn test_submit_zk_tx_semi_shield_mock_rejected() {
         let h = handler();
         let result = h.submit_zk_tx(&[serde_json::json!({
             "type": "semi_shield",
-            "proof": "0xabcdef1234567890",
-        })]).unwrap();
-        assert_eq!(result["gasUsed"], serde_json::json!("0x13880")); // 80000
+            "proof": "0xabcdef1234567890", // 8 byte — mock kanıt
+        })]);
+        assert!(result.is_err(), "semi_shield mock kanıt reddedilmeli");
+    }
+
+    /// NOVA-RED-RPC-005: 192 byte sıfır kanıt boyut kontrolünü geçer
+    /// (Groth16 doğrulama başarısız olur ama boyut hatası değil)
+    #[test]
+    fn test_submit_zk_tx_size_check_passes_for_192_bytes() {
+        let h = handler();
+        let zero_proof = "0x".to_string() + &"00".repeat(GROTH16_PROOF_SIZE);
+        let result = h.submit_zk_tx(&[serde_json::json!({
+            "type": "standard",
+            "proof": zero_proof,
+        })]);
+        // Boyut kontrolü geçti ama Groth16 doğrulama başarısız → hata
+        assert!(result.is_err(), "sıfır kanıt Groth16 doğrulamada başarısız olmalı");
+        let err_msg = result.unwrap_err().to_string();
+        // "geçersiz boyut" hatası DEĞİL olmalı — boyut doğru
+        assert!(!err_msg.contains("geçersiz boyut"), "boyut hatası olmamalı, doğrulama hatası olmalı");
     }
 
     #[test]
@@ -304,7 +331,7 @@ mod tests {
         let h = handler();
         let result = h.submit_zk_tx(&[serde_json::json!({
             "type": "standard",
-            "proof": "0x12", // çok kısa
+            "proof": "0x12", // 1 byte — boyut hatası
         })]);
         assert!(result.is_err());
     }
