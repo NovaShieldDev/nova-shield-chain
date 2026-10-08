@@ -143,12 +143,22 @@ impl HostContext {
         }
     }
 
+    /// NOVA-RED-VM-002: Storage key'i kontrat adresiyle prefix'le — kontratlar arası izolasyon.
+    /// Farklı kontratlar aynı key string'ini kullansa bile farklı namespace'e düşer.
+    fn storage_key(&self, key: &[u8]) -> Vec<u8> {
+        let mut prefixed = Vec::with_capacity(20 + key.len());
+        prefixed.extend_from_slice(self.contract.as_bytes());
+        prefixed.extend_from_slice(key);
+        prefixed
+    }
+
     pub fn storage_read(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.storage.get(key).cloned()
+        self.storage.get(&self.storage_key(key)).cloned()
     }
 
     pub fn storage_write(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.storage.insert(key, value);
+        let prefixed = self.storage_key(&key);
+        self.storage.insert(prefixed, value);
     }
 
     pub fn emit_event(&mut self, event: ContractEvent) {
@@ -483,5 +493,36 @@ mod tests {
         let mut m = meter();
         let result = NovaHostFns::call(&HostCallType::CallerAddress, &mut ctx, &mut m, &[]).unwrap();
         assert_eq!(result, addr(1).as_bytes());
+    }
+
+    /// NOVA-RED-VM-002: Farklı kontrat adresleri aynı key'i birbirinden izole tutar.
+    #[test]
+    fn test_storage_isolation_between_contracts() {
+        let key = b"shared_key";
+        let val_a = b"contract_a_value";
+        let val_b = b"contract_b_value";
+
+        // Kontrat A
+        let mut ctx_a = HostContext::new(addr(1), addr(10), 1000, 0);
+        let mut m = GasMeter::new(1_000_000);
+        let mut input = (key.len() as u32).to_le_bytes().to_vec();
+        input.extend_from_slice(key);
+        input.extend_from_slice(val_a);
+        NovaHostFns::call(&HostCallType::StorageWrite, &mut ctx_a, &mut m, &input).unwrap();
+
+        // Kontrat B — aynı key
+        let mut ctx_b = HostContext::new(addr(1), addr(20), 1000, 0);
+        let mut input2 = (key.len() as u32).to_le_bytes().to_vec();
+        input2.extend_from_slice(key);
+        input2.extend_from_slice(val_b);
+        NovaHostFns::call(&HostCallType::StorageWrite, &mut ctx_b, &mut m, &input2).unwrap();
+
+        // A'nın storage'ı hâlâ val_a olmalı (B tarafından kirletilmemiş)
+        let result_a = NovaHostFns::call(&HostCallType::StorageRead, &mut ctx_a, &mut m, key).unwrap();
+        assert_eq!(result_a, val_a, "kontrat A storage'ı izole olmalı");
+
+        // B'nin storage'ı val_b olmalı
+        let result_b = NovaHostFns::call(&HostCallType::StorageRead, &mut ctx_b, &mut m, key).unwrap();
+        assert_eq!(result_b, val_b, "kontrat B storage'ı izole olmalı");
     }
 }

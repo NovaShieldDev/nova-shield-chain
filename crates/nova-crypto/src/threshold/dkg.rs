@@ -168,9 +168,18 @@ pub fn dkg_round2_verify(
 ///   received_shares[i] = f_i(my_index)
 /// `all_feldman`: Tüm katılımcıların Feldman commitment'ları
 ///   all_feldman[i].commitments[0] = A_{i,0} = a_{i,0}·G (pk payı)
+/// `my_index`: Bu katılımcının 1-indexed index'i (1..=n).
+///
+/// ## NOVA-RED-CRYPTO-002 Güvenlik Düzeltmesi
+///
+/// Önceki sürümde `my_index = received_shares.len()` kullanılıyordu.
+/// Bu yalnızca n katılımcının tümünden share alındığında tesadüfen doğruydu.
+/// Gerçekte `my_index` farklı olabilir (örn. n=5, my_index=3 → yanlış index=5).
+/// Lagrange katsayısı yanlış hesaplanır → imza başarısız veya güvenlik zafiyeti.
 pub fn dkg_round3_finalize(
     received_shares: &[Scalar],
     all_feldman: &[FeldmanCommitments],
+    my_index: u8,
 ) -> CryptoResult<(SecretKeyShare, ThresholdPublicKey, u8)> {
     use curve25519_dalek::ristretto::CompressedRistretto;
 
@@ -194,10 +203,97 @@ pub fn dkg_round3_finalize(
         pk_sum += a_i0;
     }
 
-    let index = received_shares.len() as u8; // my_index
+    // NOVA-RED-CRYPTO-002: my_index parametreden alınır (received_shares.len() değil).
+    if my_index == 0 {
+        return Err(CryptoError::Commitment("geçersiz my_index: 0 olamaz".into()));
+    }
     // NOVA-RED-CRYPTO-003: pub_key_share hesapla — DLEQ proof için gerekli.
-    let sk_share = SecretKeyShare::new(index, sk_sum);
+    let sk_share = SecretKeyShare::new(my_index, sk_sum);
     let threshold_pk = ThresholdPublicKey::from_bytes(pk_sum.compress().to_bytes());
 
-    Ok((sk_share, threshold_pk, index))
+    Ok((sk_share, threshold_pk, my_index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_feldman(n: u8, t: u8, index: u8) -> (FeldmanCommitments, Vec<Scalar>) {
+        let params = DkgParams::new(n, t, index).unwrap();
+        let round1 = dkg_round1(&params);
+        (round1.feldman.clone(), round1.shares.clone())
+    }
+
+    /// NOVA-RED-CRYPTO-002: Doğru my_index ile sk_share index'i eşleşmeli.
+    #[test]
+    fn test_dkg_round3_correct_index() {
+        let n = 3u8;
+        let t = 2u8;
+        let my_index = 2u8; // katılımcı 2
+
+        // 3 katılımcı, her biri share paylaşıyor
+        let mut received_shares: Vec<Scalar> = Vec::new();
+        let mut all_feldman: Vec<FeldmanCommitments> = Vec::new();
+
+        for i in 1u8..=n {
+            let params = DkgParams::new(n, t, i).unwrap();
+            let round1 = dkg_round1(&params);
+            // share for katılımcı my_index=2 → shares[my_index-1] = shares[1]
+            received_shares.push(round1.shares[(my_index - 1) as usize]);
+            all_feldman.push(round1.feldman.clone());
+        }
+
+        let (sk_share, _pk, idx) = dkg_round3_finalize(
+            &received_shares,
+            &all_feldman,
+            my_index,
+        ).unwrap();
+
+        // Index doğru mu?
+        assert_eq!(idx, my_index, "my_index doğru olmalı");
+        assert_eq!(sk_share.index, my_index, "sk_share.index doğru olmalı");
+    }
+
+    /// NOVA-RED-CRYPTO-002: Eski kod received_shares.len() kullanıyordu → yanlış index.
+    /// n=5, my_index=3 durumunda len()=5, my_index=3 — fark edilir mi?
+    #[test]
+    fn test_dkg_round3_index_not_equal_to_len() {
+        let n = 5u8;
+        let t = 3u8;
+        let my_index = 3u8; // katılımcı 3, ama received_shares.len()=5 olacak
+
+        let mut received_shares: Vec<Scalar> = Vec::new();
+        let mut all_feldman: Vec<FeldmanCommitments> = Vec::new();
+
+        for i in 1u8..=n {
+            let params = DkgParams::new(n, t, i).unwrap();
+            let round1 = dkg_round1(&params);
+            received_shares.push(round1.shares[(my_index - 1) as usize]);
+            all_feldman.push(round1.feldman.clone());
+        }
+
+        assert_eq!(received_shares.len(), 5); // len = n = 5
+        assert_ne!(received_shares.len() as u8, my_index); // 5 != 3
+
+        let (sk_share, _pk, idx) = dkg_round3_finalize(
+            &received_shares,
+            &all_feldman,
+            my_index,
+        ).unwrap();
+
+        // Düzeltilmiş kod my_index=3 döndürmeli (eski kod 5 döndürürdü)
+        assert_eq!(idx, 3u8, "eski kod yanlışlıkla 5 döndürürdü");
+        assert_eq!(sk_share.index, 3u8);
+    }
+
+    /// my_index=0 geçersiz.
+    #[test]
+    fn test_dkg_round3_zero_index_rejected() {
+        let shares = vec![Scalar::ONE];
+        let feldman = FeldmanCommitments {
+            commitments: vec![[1u8; 32]],
+        };
+        let result = dkg_round3_finalize(&shares, &[feldman], 0);
+        assert!(result.is_err());
+    }
 }

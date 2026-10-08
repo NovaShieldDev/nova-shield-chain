@@ -409,26 +409,28 @@ mod tests {
 
     #[test]
     fn test_noise_session_keys_match() {
-        // NOT: Noise XX'te her iki taraf AYNI HKDF girdisini kullanmaz.
-        // Başlatıcı: HKDF(ee || es), Yanıtlayıcı: HKDF(ee || se)
-        // Tam simetrik DH için her iki tarafın aynı key'i türetmesi gerekir.
-        // Bu implementasyonda test ortamı için session_key tutarlılığını doğruluyoruz.
+        // NOVA-RED-NETWORK-001: X25519 DH komütatifliği garanti eder:
+        //   Başlatıcı: ee = DH(init_eph, resp_eph),  es = DH(init_eph, resp_static)
+        //   Yanıtlayıcı: ee = DH(resp_eph, init_eph), se = DH(resp_static, init_eph)
+        //   => ee_init == ee_resp (DH simetrik) ve es_init == se_resp (DH simetrik)
+        //   => HKDF(ee||es) == HKDF(ee||se)
+        // Oturum anahtarları MUTLAKA eşit olmalı — elle geçersiz kılma kaldırıldı.
         let (init, resp) = full_handshake();
-        assert!(init.session_key().is_some());
-        assert!(resp.session_key().is_some());
-        // Her iki oturum da aktif
+        let init_key = init.session_key().expect("başlatıcı session_key yok");
+        let resp_key = resp.session_key().expect("yanıtlayıcı session_key yok");
+        assert_eq!(
+            init_key, resp_key,
+            "NOVA-RED-NETWORK-001: Başlatıcı ve yanıtlayıcı farklı session key türetti — forward secrecy kırık"
+        );
         assert!(init.is_complete());
         assert!(resp.is_complete());
     }
 
     #[test]
     fn test_noise_encrypt_decrypt_initiator_to_responder() {
+        // Gerçek el sıkışma sonrası her iki tarafın session key'i eşit olmalı.
+        // Manuel override kaldırıldı (NOVA-RED-NETWORK-001 düzeltmesi).
         let (mut init, mut resp) = full_handshake();
-
-        // Aynı session key'e sahip olduklarını varsay (HKDF(ee||es) == HKDF(ee||se)
-        // test ortamında başlatıcının session key'ini yanıtlayıcıya manuel ata)
-        let init_key = init.session_key().unwrap();
-        resp.session_key = Some(init_key);
 
         let plaintext = b"Nova Shield Chain P2P mesaji - Noise XX test";
         let ct = init.encrypt(plaintext).unwrap();

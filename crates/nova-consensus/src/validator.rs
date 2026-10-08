@@ -114,11 +114,26 @@ impl ValidatorRegistry {
     /// Unbonding başlat — stake çekme kilidi.
     ///
     /// Cosmos SDK x/staking `UnbondingDelegation` pattern.
+    ///
+    /// ## NOVA-RED-0005 Güvenlik Düzeltmesi
+    ///
+    /// `initiator: ValidatorId` parametresi eklendi.
+    /// Sadece `initiator == validator_id` olan çağrı kabul edilir.
+    /// Önceki sürümde herhangi biri başkasının unbonding sürecini başlatabiliyordu.
     pub fn begin_unbonding(
         &self,
         validator_id: &ValidatorId,
+        initiator: &ValidatorId,
         current_slot: SlotId,
     ) -> ConsensusResult<SlotId> {
+        // NOVA-RED-0005: Sadece validator kendisi unbonding başlatabilir
+        if initiator != validator_id {
+            return Err(ConsensusError::UnauthorizedUnbonding {
+                initiator: initiator.0.to_string(),
+                validator: validator_id.0.to_string(),
+            });
+        }
+
         let mut v = self.validators
             .get_mut(validator_id)
             .ok_or_else(|| ConsensusError::ValidatorNotFound {
@@ -586,7 +601,8 @@ mod tests {
     fn test_begin_unbonding_active_validator_ok() {
         let registry = ValidatorRegistry::new();
         let id = register_validator(&registry, 20);
-        let result = registry.begin_unbonding(&id, SlotId(100));
+        // NOVA-RED-0005: initiator == validator_id
+        let result = registry.begin_unbonding(&id, &id, SlotId(100));
         assert!(result.is_ok(), "Aktif validator unbonding başlatabilmeli");
     }
 
@@ -599,7 +615,7 @@ mod tests {
         registry.jail(&id, SlotId(100_000)).unwrap();
 
         // Unbonding başlatmaya çalış — reddedilmeli
-        let err = registry.begin_unbonding(&id, SlotId(500)).unwrap_err();
+        let err = registry.begin_unbonding(&id, &id, SlotId(500)).unwrap_err();
         assert!(
             matches!(err, ConsensusError::ValidatorJailed { .. }),
             "Jailed validator unbonding başlatamaz: {err:?}"
@@ -612,8 +628,24 @@ mod tests {
         let id = register_validator(&registry, 22);
         registry.tombstone(&id).unwrap();
 
-        let err = registry.begin_unbonding(&id, SlotId(500)).unwrap_err();
+        let err = registry.begin_unbonding(&id, &id, SlotId(500)).unwrap_err();
         assert!(matches!(err, ConsensusError::ValidatorTombstoned));
+    }
+
+    /// NOVA-RED-0005: Başka validator adına unbonding başlatılamaz
+    #[test]
+    fn test_unauthorized_unbonding_rejected() {
+        let registry = ValidatorRegistry::new();
+        let owner = register_validator(&registry, 30);
+        let attacker = vid(99); // validator setinde yok, ama initiator olarak kullanılıyor
+
+        let err = registry.begin_unbonding(&owner, &attacker, SlotId(100)).unwrap_err();
+        assert!(
+            matches!(err, ConsensusError::UnauthorizedUnbonding { .. }),
+            "Başka validator adına unbonding başlatılamaz: {:?}", err
+        );
+        // Owner hâlâ Active (unbonding başlatılamadı)
+        assert!(matches!(registry.get(&owner).unwrap().status, ValidatorStatus::Active));
     }
 
     #[test]

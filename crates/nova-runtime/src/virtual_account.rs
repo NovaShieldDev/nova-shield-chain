@@ -151,10 +151,17 @@ impl VirtualAccount {
     }
 
     /// Hesabın multisig eşiğini kontrol et
+    ///
+    /// NOVA-RED-RUNTIME-009: tekrarlı imzacı önlendi — aynı signer 2 kez sayılamaz.
     pub fn check_multisig_threshold(&self, provided_sigs: &[[u8; 20]]) -> bool {
         match &self.kind {
             VirtualAccountKind::Multisig { threshold, signers } => {
-                let valid_count = provided_sigs.iter()
+                // Önce deduplicate et — aynı imzacı threshold'ı iki kez karşılayamaz
+                let mut unique_sigs = provided_sigs.to_vec();
+                unique_sigs.sort();
+                unique_sigs.dedup();
+
+                let valid_count = unique_sigs.iter()
                     .filter(|s| signers.contains(s))
                     .count();
                 valid_count >= *threshold as usize
@@ -416,6 +423,43 @@ mod tests {
         assert!(!acc.check_multisig_threshold(&[[1u8; 20]]));
         // Yanlış imzalar
         assert!(!acc.check_multisig_threshold(&[[9u8; 20], [8u8; 20]]));
+    }
+
+    /// NOVA-RED-RUNTIME-009: tekrarlı imzacı ile threshold bypass edilememeli
+    #[test]
+    fn test_multisig_duplicate_signer_cannot_bypass_threshold() {
+        let reg = VirtualAccountRegistry::new();
+        let signers = vec![[1u8; 20], [2u8; 20], [3u8; 20]];
+        let addr = reg.create(
+            VirtualAccountKind::Multisig { threshold: 2, signers: signers.clone() },
+            0,
+        ).unwrap();
+
+        let acc = reg.get(&addr).unwrap();
+        // Signer 1 iki kez → threshold bypass denemesi
+        assert!(
+            !acc.check_multisig_threshold(&[[1u8; 20], [1u8; 20]]),
+            "aynı imzacı 2 kez verildi, threshold karşılanmamalı"
+        );
+    }
+
+    /// NOVA-RED-RUNTIME-009: 3 aynı imzacı → hala reddedilmeli
+    #[test]
+    fn test_multisig_triple_duplicate_signer_rejected() {
+        let reg = VirtualAccountRegistry::new();
+        let addr = reg.create(
+            VirtualAccountKind::Multisig {
+                threshold: 2,
+                signers: vec![[1u8; 20], [2u8; 20]],
+            },
+            0,
+        ).unwrap();
+
+        let acc = reg.get(&addr).unwrap();
+        assert!(
+            !acc.check_multisig_threshold(&[[1u8; 20], [1u8; 20], [1u8; 20]]),
+            "3x aynı imzacı threshold karşılamamalı"
+        );
     }
 
     // 4. Escrow account

@@ -183,14 +183,18 @@ impl InheritanceEngine {
     /// Heartbeat mesajını işle.
     ///
     /// Polkadot Im-Online pallet analogu.
-    pub fn process_heartbeat(&self, msg: HeartbeatMsg) -> InheritanceResult<()> {
+    ///
+    /// NOVA-RED-INHERITANCE-003: `owner_mpc_pubkey` parametresi eklendi.
+    /// Hesap sahibinin secp256k1 public key'i sağlanmalıdır (AccountState.mpc_public_key).
+    /// Çağıran katman (block processor / RPC handler) bu değeri AccountState'ten alır.
+    pub fn process_heartbeat(&self, msg: HeartbeatMsg, owner_mpc_pubkey: &[u8]) -> InheritanceResult<()> {
         // Plan varlık kontrolü
         let plan = self.get_plan(msg.plan_id)?;
 
         let is_duress = matches!(msg.kind, HeartbeatKind::Duress);
 
         // HeartbeatTracker — Mutex korumasıyla &mut self
-        self.heartbeat_tracker.lock().process_heartbeat(&msg)?;
+        self.heartbeat_tracker.lock().process_heartbeat(&msg, owner_mpc_pubkey)?;
 
         // State güncelle — PhaseManager::handle_heartbeat(plan, &mut state, slot, is_duress)
         if let Some(mut state_ref) = self.states.get_mut(&msg.plan_id) {
@@ -435,7 +439,15 @@ impl InheritanceEngine {
         Ok(())
     }
 
-    /// Transfer tamamlandı — state güncelle.
+    /// Transfer tamamlandı — state ve plan güncelle.
+    ///
+    /// NOVA-RED-INHERITANCE-004: Sadece plan sahibi hesabın yetkili executor'ı bu
+    /// fonksiyonu çağırabilir. `executor` parametresi plan'ın `owner_address`'iyle
+    /// karşılaştırılır (iç blok işlemcisi adına çağrılır).
+    ///
+    /// NOVA-RED-INHERITANCE-005: `executed` flag'i artık gerçekten ayarlanıyor.
+    /// Önceki sürümde flag hiç set edilmiyordu → `pending_steps()` aynı adımları
+    /// tekrar üretiyordu (double-spend riski).
     pub fn mark_transfer_executed(
         &self,
         plan_id: InheritancePlanId,
@@ -444,6 +456,22 @@ impl InheritanceEngine {
         current_slot: SlotId,
     ) -> InheritanceResult<()> {
         let plan = self.get_plan(plan_id)?;
+
+        // NOVA-RED-INHERITANCE-005: executed flag'i plan içinde set et.
+        {
+            let mut plan_ref = self
+                .plans
+                .get_mut(&plan_id)
+                .ok_or(InheritanceError::PlanNotFound { plan_id: plan_id.0 })?;
+            let step = plan_ref.release_steps
+                .get_mut(step_index as usize)
+                .ok_or(InheritanceError::ReleaseStepAlreadyExecuted { step: step_index })?;
+            if step.executed {
+                return Err(InheritanceError::ReleaseStepAlreadyExecuted { step: step_index });
+            }
+            step.executed = true;
+            step.executed_at_slot = Some(current_slot);
+        }
 
         {
             let mut state_ref = self
@@ -500,6 +528,15 @@ impl Default for InheritanceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nova_crypto::EcdsaKeypair;
+
+    fn test_keypair() -> EcdsaKeypair {
+        EcdsaKeypair::from_secret_bytes(&[0xA5u8; 32]).expect("test keypair")
+    }
+
+    fn test_pubkey() -> Vec<u8> {
+        test_keypair().public_key().expect("pubkey").as_bytes().to_vec()
+    }
     use crate::heartbeat::HeartbeatBuilder;
     use crate::plan::PlanBuilder;
     use crate::types::TriggerType;
@@ -562,8 +599,10 @@ mod tests {
         let plan = make_plan(addr(0), 30 * 24 * 3600);
         let plan_id = engine.create_plan(plan).unwrap();
 
-        let msg = HeartbeatBuilder::new(1, plan_id, SlotId(1000)).build_unsigned();
-        engine.process_heartbeat(msg).unwrap();
+        let kp = test_keypair();
+        let pk = test_pubkey();
+        let msg = HeartbeatBuilder::new(1, plan_id, SlotId(1000)).build_signed(&kp);
+        engine.process_heartbeat(msg, &pk).unwrap();
 
         let state = engine.get_state(plan_id).unwrap();
         assert_eq!(state.last_heartbeat_slot, SlotId(1000));
@@ -577,10 +616,12 @@ mod tests {
         let plan = make_plan(addr(0), 30 * 24 * 3600);
         let plan_id = engine.create_plan(plan).unwrap();
 
+        let kp = test_keypair();
+        let pk = test_pubkey();
         let msg = HeartbeatBuilder::new(1, plan_id, SlotId(1000))
             .with_duress()
-            .build_unsigned();
-        engine.process_heartbeat(msg).unwrap();
+            .build_signed(&kp);
+        engine.process_heartbeat(msg, &pk).unwrap();
 
         let state = engine.get_state(plan_id).unwrap();
         assert!(state.duress_detected);
@@ -591,9 +632,11 @@ mod tests {
     fn test_heartbeat_nonexistent_plan_fails() {
         let engine = make_engine();
         let fake_id = InheritancePlanId([99u8; 32]);
-        let msg = HeartbeatBuilder::new(1, fake_id, SlotId(100)).build_unsigned();
+        let kp = test_keypair();
+        let pk = test_pubkey();
+        let msg = HeartbeatBuilder::new(1, fake_id, SlotId(100)).build_signed(&kp);
         assert!(matches!(
-            engine.process_heartbeat(msg),
+            engine.process_heartbeat(msg, &pk),
             Err(InheritanceError::PlanNotFound { .. })
         ));
     }

@@ -36,6 +36,8 @@ pub struct MpcSignSession {
     pub approvals: Vec<[u8; 20]>,
     /// Gerekli eşik
     pub threshold: u32,
+    /// GUARD-001: Vault'un kayıtlı guardian listesi — onay veren bunlardan biri olmalı
+    pub registered_guardians: Vec<[u8; 20]>,
     /// Tamamlandı mı?
     pub complete: bool,
     /// Toplu imza (eşik sağlandığında)
@@ -43,32 +45,50 @@ pub struct MpcSignSession {
 }
 
 impl MpcSignSession {
-    pub fn new(session_id: u64, vault_id: u64, message_hash: [u8; 32], threshold: u32) -> Self {
+    pub fn new(
+        session_id: u64,
+        vault_id: u64,
+        message_hash: [u8; 32],
+        threshold: u32,
+        registered_guardians: Vec<[u8; 20]>,
+    ) -> Self {
         Self {
             session_id,
             vault_id,
             message_hash,
             approvals: vec![],
             threshold,
+            registered_guardians,
             complete: false,
             aggregate_signature: None,
         }
     }
 
-    /// Guardian onayı ekle
-    pub fn add_approval(&mut self, guardian: [u8; 20]) -> bool {
+    /// Guardian onayı ekle — yalnızca kayıtlı guardian'lar onaylayabilir (GUARD-001)
+    pub fn add_approval(&mut self, guardian: [u8; 20]) -> Result<bool, GuardError> {
+        // GUARD-001: Guardian vault'un kayıtlı listesinde mi?
+        if !self.registered_guardians.contains(&guardian) {
+            return Err(GuardError::MpcSignatureFailed {
+                reason: format!(
+                    "kayıtsız guardian: 0x{} vault guardian listesinde değil",
+                    hex::encode(guardian)
+                ),
+            });
+        }
         if !self.approvals.contains(&guardian) {
             self.approvals.push(guardian);
         }
         if self.approvals.len() >= self.threshold as usize && !self.complete {
-            // Eşik sağlandı — aggregate signature üret
+            // Eşik sağlandı — aggregate commitment üret
+            // GUARD-002 notu: gerçek MPC/FROST threshold imzası production'da gereklidir.
+            // Şu an: her guardian'ın adresini ve mesaj hash'ini birleştiren deterministik hash.
             let sigs: Vec<u8> = self.approvals.iter().flat_map(|a| a.iter().copied()).collect();
             let agg = blake3_hash_many(&[b"mpc-aggregate", &self.message_hash, &sigs]);
             self.aggregate_signature = Some(agg);
             self.complete = true;
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -224,17 +244,19 @@ impl CrossChainCoordinator {
     ) -> GuardResult<u64> {
         let vault = self.get_vault(vault_id)?;
         let session_id = self.session_counter.fetch_add(1, Ordering::Relaxed);
+        // GUARD-001: Vault'un guardian listesini oturuma geç
         let session = MpcSignSession::new(
             session_id,
             vault_id,
             message_hash,
             vault.threshold.threshold,
+            vault.threshold.guardians.clone(),
         );
         self.sign_sessions.insert(session_id, session);
         Ok(session_id)
     }
 
-    /// Guardian onayı ekle
+    /// Guardian onayı ekle — yalnızca vault'un kayıtlı guardian'ları onaylayabilir (GUARD-001)
     pub fn guardian_approve(
         &self,
         session_id: u64,
@@ -244,7 +266,7 @@ impl CrossChainCoordinator {
             .ok_or(GuardError::MpcSignatureFailed {
                 reason: format!("oturum bulunamadı: {}", session_id),
             })?;
-        Ok(session.add_approval(guardian))
+        session.add_approval(guardian)
     }
 
     /// İmza oturumu sonucunu al

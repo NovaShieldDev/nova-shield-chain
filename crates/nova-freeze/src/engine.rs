@@ -375,18 +375,30 @@ impl FreezeEngine {
     // ─── Yapılandırma ────────────────────────────────────────────────────────
 
     /// Hesap için freeze yetkili guardian listesini ayarla.
+    ///
+    /// NOVA-RED-FREEZE-001: Yalnızca hesap sahibi kendi guardian listesini değiştirebilir.
+    /// Önceki sürümde herhangi biri `account` için guardian listesi atayabiliyordu.
     pub fn set_authorized_guardians(
         &self,
         account: Address,
+        initiator: Address,
         config: FreezeAuthorizedGuardians,
         _slot: SlotId,
-    ) {
+    ) -> FreezeResult<()> {
+        // NOVA-RED-FREEZE-001: Sadece hesap sahibi kendi listesini ayarlayabilir
+        if initiator != account {
+            return Err(FreezeError::UnauthorizedFreezeInitiator {
+                initiator: hex::encode(initiator.as_bytes()),
+                account: hex::encode(account.as_bytes()),
+            });
+        }
         self.guardian_registry.set_authorized_guardians(config);
         debug!(
             target: "nova_freeze",
             account = %hex::encode(account.as_bytes()),
             "freeze yetkili guardian listesi güncellendi"
         );
+        Ok(())
     }
 
     // ─── Davranış Takibi ────────────────────────────────────────────────────
@@ -402,20 +414,37 @@ impl FreezeEngine {
     ///
     /// Pattern: Cosmos SDK slashing `HandleValidatorSignature()`:
     /// ihlal kaydı ekle, eşik aşıldıysa slash + jail.
+    ///
+    /// NOVA-RED-FREEZE-005: reporter kimlik doğrulaması — sadece dondurulan
+    /// hesap sahibi veya yetkili guardian bildirebilir.
     pub fn report_wrong_freeze(
         &self,
         freeze_id: FreezeId,
-        _reporter: Address,
+        reporter: Address,
         slot: SlotId,
     ) -> FreezeResult<Vec<FreezeEvent>> {
-        // Audit log'da freeze_id'yi bul
-        let initiator = {
+        // Audit log'da freeze_id'yi bul → account ve initiator bilgisini al
+        let (initiator, frozen_account) = {
             let log = self.audit_log.lock();
             log.iter()
                 .find(|e| e.freeze_id == freeze_id)
-                .map(|e| e.initiator)
+                .map(|e| (e.initiator, e.account))
                 .ok_or(FreezeError::WrongFreezeReportInvalid)?
         };
+
+        // NOVA-RED-FREEZE-005: reporter yetki kontrolü
+        // Yetkili reporter: dondurulan hesap sahibi VEYA yetkili guardian
+        let reporter_authorized = reporter == frozen_account
+            || self
+                .guardian_registry
+                .get_authorized_guardians(&frozen_account)
+                .map_or(false, |g| g.is_authorized(&reporter));
+
+        if !reporter_authorized {
+            return Err(FreezeError::UnauthorizedWrongFreezeReporter {
+                reporter: hex::encode(reporter.as_bytes()),
+            });
+        }
 
         self.total_wrong_freezes.fetch_add(1, Ordering::Relaxed);
 
@@ -658,11 +687,13 @@ mod tests {
 
     fn make_engine_with_guardians(account: Address, guardians: Vec<Address>, threshold: u8) -> FreezeEngine {
         let engine = FreezeEngine::with_defaults();
+        // initiator == account (hesap sahibi kendi guardian listesini ayarlıyor)
         engine.set_authorized_guardians(
+            account,
             account,
             FreezeAuthorizedGuardians::new(account, guardians, threshold),
             SlotId(0),
-        );
+        ).expect("hesap sahibi kendi listesini ayarlayabilmeli");
         engine
     }
 
@@ -967,6 +998,7 @@ mod tests {
 
     // ─── report_wrong_freeze ─────────────────────────────────────────────────
 
+    /// NOVA-RED-FREEZE-005: hesap sahibi yanlış freeze'i bildirebilmeli
     #[test]
     fn test_report_wrong_freeze_slashes_guardian() {
         let account = addr(1);
@@ -975,9 +1007,41 @@ mod tests {
         let engine = make_engine_with_guardians(account, vec![g1, g2], 2);
         let freeze_id = engine.freeze_guardian(account, vec![g1, g2], SlotId(0), 0).unwrap();
 
-        let events = engine.report_wrong_freeze(freeze_id, addr(99), SlotId(100)).unwrap();
+        // reporter = hesap sahibi (account) → yetkili
+        let events = engine.report_wrong_freeze(freeze_id, account, SlotId(100)).unwrap();
         let has_slash = events.iter().any(|e| matches!(e.event_type, FreezeEventType::GuardianSlashed { .. }));
         assert!(has_slash);
+    }
+
+    /// NOVA-RED-FREEZE-005: yetkili guardian da bildirebilmeli
+    #[test]
+    fn test_report_wrong_freeze_authorized_guardian_can_report() {
+        let account = addr(1);
+        let g1 = addr(10);
+        let g2 = addr(11);
+        let engine = make_engine_with_guardians(account, vec![g1, g2], 2);
+        let freeze_id = engine.freeze_guardian(account, vec![g1, g2], SlotId(0), 0).unwrap();
+
+        // reporter = yetkili guardian g2 → bildirebilmeli
+        let result = engine.report_wrong_freeze(freeze_id, g2, SlotId(100));
+        assert!(result.is_ok(), "yetkili guardian bildirebilmeli: {:?}", result.err());
+    }
+
+    /// NOVA-RED-FREEZE-005: yetkisiz adres bildirim yapamaz
+    #[test]
+    fn test_report_wrong_freeze_unauthorized_reporter_rejected() {
+        let account = addr(1);
+        let g1 = addr(10);
+        let g2 = addr(11);
+        let engine = make_engine_with_guardians(account, vec![g1, g2], 2);
+        let freeze_id = engine.freeze_guardian(account, vec![g1, g2], SlotId(0), 0).unwrap();
+
+        // reporter = rastgele adres → yetkisiz
+        let err = engine.report_wrong_freeze(freeze_id, addr(99), SlotId(100)).unwrap_err();
+        assert!(
+            matches!(err, FreezeError::UnauthorizedWrongFreezeReporter { .. }),
+            "yetkisiz reporter reddedilmeli, aldık: {:?}", err
+        );
     }
 
     #[test]
@@ -985,6 +1049,49 @@ mod tests {
         let engine = make_engine();
         let err = engine.report_wrong_freeze([0xAB; 32], addr(1), SlotId(0)).unwrap_err();
         assert!(matches!(err, FreezeError::WrongFreezeReportInvalid));
+    }
+
+    // ── NOVA-RED-FREEZE-001 regression testleri ───────────────────────────────
+
+    /// Hesap sahibi kendi guardian listesini ayarlayabilmeli
+    #[test]
+    fn test_freeze001_owner_can_set_own_guardians() {
+        let engine = make_engine();
+        let account = addr(1);
+        let config = FreezeAuthorizedGuardians::new(account, vec![addr(10), addr(11)], 2);
+        let result = engine.set_authorized_guardians(account, account, config, SlotId(0));
+        assert!(result.is_ok(), "Hesap sahibi kendi listesini ayarlayabilmeli");
+    }
+
+    /// Saldırgan başka birinin guardian listesini değiştiremez
+    #[test]
+    fn test_freeze001_attacker_cannot_set_others_guardians() {
+        let engine = make_engine();
+        let victim = addr(1);
+        let attacker = addr(99);
+        // Saldırgan, kurbanın guardian listesini değiştirmeye çalışıyor
+        let config = FreezeAuthorizedGuardians::new(victim, vec![attacker], 1);
+        let err = engine.set_authorized_guardians(victim, attacker, config, SlotId(0)).unwrap_err();
+        assert!(
+            matches!(err, FreezeError::UnauthorizedFreezeInitiator { .. }),
+            "Yetkisiz guardian listesi değişikliği reddedilmeli: {:?}", err
+        );
+    }
+
+    /// Saldırgan kendisini kurban hesabına guardian ekleyemez ve dondurma yapamaz
+    #[test]
+    fn test_freeze001_no_guardian_injection_attack() {
+        let engine = make_engine();
+        let victim = addr(1);
+        let attacker = addr(99);
+
+        // Saldırı denemeleri başarısız olmalı
+        let config = FreezeAuthorizedGuardians::new(victim, vec![attacker], 1);
+        assert!(engine.set_authorized_guardians(victim, attacker, config, SlotId(0)).is_err());
+
+        // Guardian listesi boş kaldığı için freeze de başarısız olmalı
+        let err = engine.freeze_guardian(victim, vec![attacker], SlotId(100), 10000).unwrap_err();
+        assert!(matches!(err, FreezeError::NoAuthorizedGuardians));
     }
 
     // ─── get_summary ──────────────────────────────────────────────────────────

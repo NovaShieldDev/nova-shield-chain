@@ -38,10 +38,13 @@ pub struct RuntimeBlockHeader {
 
 impl RuntimeBlockHeader {
     /// BLAKE3 ile blok hash'i hesapla
+    ///
+    /// NOVA-RED-RUNTIME-007: epoch hash'e dahil edildi — farklı epoch = farklı hash garantisi.
     pub fn compute_hash(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&self.height.to_le_bytes());
         hasher.update(&self.slot.0.to_le_bytes());
+        hasher.update(&self.epoch.0.to_le_bytes());
         hasher.update(&self.parent_hash);
         hasher.update(&self.state_root);
         hasher.update(&self.tx_root);
@@ -233,5 +236,32 @@ mod tests {
         let b1 = make_block(5);
         let b2 = make_block(5);
         assert_eq!(b1.block_hash, b2.block_hash);
+    }
+
+    /// NOVA-RED-RUNTIME-007: farklı epoch → farklı hash (epoch hash'e dahil edilmeli)
+    #[test]
+    fn test_block_hash_differs_by_epoch() {
+        let b1 = RuntimeBlock::open(
+            10, SlotId(100), EpochId(1), [0u8; 32], ValidatorId(1), 1_000_000_000,
+        );
+        let b2 = RuntimeBlock::open(
+            10, SlotId(100), EpochId(2), [0u8; 32], ValidatorId(1), 1_000_000_000,
+        );
+        assert_ne!(
+            b1.block_hash, b2.block_hash,
+            "farklı epoch → farklı blok hash'i olmalı"
+        );
+    }
+
+    /// NOVA-RED-RUNTIME-007: aynı epoch → aynı hash (deterministic)
+    #[test]
+    fn test_block_hash_same_epoch_same_hash() {
+        let b1 = RuntimeBlock::open(
+            10, SlotId(100), EpochId(5), [0xABu8; 32], ValidatorId(1), 1_000_000_000,
+        );
+        let b2 = RuntimeBlock::open(
+            10, SlotId(100), EpochId(5), [0xABu8; 32], ValidatorId(1), 1_000_000_000,
+        );
+        assert_eq!(b1.block_hash, b2.block_hash, "aynı parametreler → aynı hash");
     }
 }

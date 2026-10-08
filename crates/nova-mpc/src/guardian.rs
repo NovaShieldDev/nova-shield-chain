@@ -446,11 +446,15 @@ impl GuardianSet {
     }
 
     /// Aktif guardian'ların indekslerini döndür (1-tabanlı, threshold protokolü için).
+    ///
+    /// NOVA-RED-MPC-003: index, aktif listede değil TAM listede (full list) pozisyona göre
+    /// hesaplanır. Threshold protokolünde her tarafın sabit (fixed) index'i vardır.
+    /// Örnek: [aktif, inaktif, aktif] → [PartyIndex(1), PartyIndex(3)] (2 değil!)
     pub fn active_party_indices(&self) -> Vec<PartyIndex> {
         self.guardians
             .iter()
-            .filter(|g| g.is_active())
             .enumerate()
+            .filter(|(_, g)| g.is_active())
             .map(|(i, _)| PartyIndex(i as u32 + 1))
             .collect()
     }
@@ -641,5 +645,36 @@ mod tests {
             institutional.can_freeze(),
             "kurumsal guardian freeze yapabilir"
         );
+    }
+
+    fn make_guardian_set(n: u32) -> GuardianSet {
+        let mut gs = GuardianSet::new(2, 0).unwrap();
+        for id in 1..=n {
+            gs.guardians.push(make_record(id, GuardianCategory::Institutional));
+        }
+        gs
+    }
+
+    /// NOVA-RED-MPC-003: inaktif guardian aralarında olsa bile index tam listeden alınmalı
+    #[test]
+    fn test_active_party_indices_uses_full_list_position() {
+        let mut gs = make_guardian_set(3);
+
+        // guardian 2 (index 1) → revoke
+        gs.revoke_guardian(2, 100).unwrap();
+
+        // Aktif: guardian 1 (full-index 0 → PartyIndex(1)) ve guardian 3 (full-index 2 → PartyIndex(3))
+        let indices = gs.active_party_indices();
+        assert_eq!(indices.len(), 2, "2 aktif guardian olmalı");
+        assert_eq!(indices[0], PartyIndex(1), "ilk aktif guardian → PartyIndex(1)");
+        assert_eq!(indices[1], PartyIndex(3), "üçüncü guardian aktif → PartyIndex(3), 2 değil!");
+    }
+
+    /// NOVA-RED-MPC-003: tüm aktif ise sıralı 1..=n
+    #[test]
+    fn test_active_party_indices_all_active_sequential() {
+        let gs = make_guardian_set(4);
+        let indices = gs.active_party_indices();
+        assert_eq!(indices, vec![PartyIndex(1), PartyIndex(2), PartyIndex(3), PartyIndex(4)]);
     }
 }

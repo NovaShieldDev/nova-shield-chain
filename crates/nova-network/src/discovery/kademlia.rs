@@ -80,21 +80,50 @@ pub struct RoutingTableEntry {
 
 // ─── KBucket ──────────────────────────────────────────────────────────────────
 
+/// LRU ping isteği — bucket doluyken yeni entry için ping bekleniyor.
+///
+/// Kademlia §2.4: "new node is placed in a replacement cache until
+/// the LRU-eviction candidate responds (or not) to a ping."
+#[derive(Debug, Clone)]
+pub struct PendingPing {
+    /// Ping gönderilmesi gereken (LRU) peer
+    pub lru_peer: PeerId,
+    /// Ping gönderilme zamanı (ms)
+    pub ping_sent_ms: u64,
+    /// Ping timeout süresi (ms) — yanıt gelmezse evict
+    pub timeout_ms: u64,
+    /// Ping timeout'unda eklenecek aday
+    pub candidate: RoutingTableEntry,
+}
+
 /// Tek bir K-bucket
+///
+/// NOVA-RED-NETWORK-005: bucket doluysa LRU node hemen evict edilmez;
+/// önce ping gönderilir (PendingPing). Timeout geçerse evict + candidate eklenir.
+/// Polkadot libp2p `KBucketTable::entry()` → `PendingNode` pattern.
 #[derive(Debug, Default)]
 pub struct KBucket {
     entries: Vec<RoutingTableEntry>,
     k: usize,
+    /// LRU ping bekleme kuyruğu
+    pub pending_pings: Vec<PendingPing>,
 }
+
+/// Ping timeout süresi: 10 saniye
+pub const PING_TIMEOUT_MS: u64 = 10_000;
 
 impl KBucket {
     pub fn new(k: usize) -> Self {
-        Self { entries: Vec::new(), k }
+        Self { entries: Vec::new(), k, pending_pings: Vec::new() }
     }
 
-    /// Entry ekle — doluysa en eskiyi çıkar (LRU)
+    /// Entry ekle.
+    ///
+    /// NOVA-RED-NETWORK-005: bucket doluysa LRU'ya ping gönderilmesi gerekiyor.
+    /// `now_ms` ile çağrıldığında PendingPing kuyruğuna alır, hemen evict etmez.
+    /// `false` → bucket dolu, ping bekleniyor. `true` → eklendi.
     pub fn insert(&mut self, entry: RoutingTableEntry) -> bool {
-        // Zaten var mı?
+        // Zaten var mı? → güncelle
         if let Some(pos) = self.entries.iter().position(|e| e.peer_id == entry.peer_id) {
             self.entries[pos] = entry;
             return true;
@@ -103,18 +132,63 @@ impl KBucket {
             self.entries.push(entry);
             true
         } else {
-            // En eski (en küçük last_seen) çıkar
-            if let Some(min_pos) = self.entries.iter()
-                .enumerate()
-                .min_by_key(|(_, e)| e.last_seen_ms)
-                .map(|(i, _)| i)
+            // NOVA-RED-NETWORK-005: bucket dolu → LRU'ya ping gerekli, hemen evict etme.
+            // PendingPing kuyruğuna ekle (tekrar eden peer için kuyruğu güncelle).
+            if let Some(lru) = self.entries.iter()
+                .min_by_key(|e| e.last_seen_ms)
             {
-                self.entries[min_pos] = entry;
-                true
+                let lru_peer = lru.peer_id.clone();
+                let ping_sent_ms = entry.last_seen_ms; // "now" olarak kullan
+                // Aynı LRU için mevcut pending varsa güncelle, yoksa ekle
+                if let Some(p) = self.pending_pings.iter_mut().find(|p| p.lru_peer == lru_peer) {
+                    p.candidate = entry;
+                } else {
+                    self.pending_pings.push(PendingPing {
+                        lru_peer,
+                        ping_sent_ms,
+                        timeout_ms: PING_TIMEOUT_MS,
+                        candidate: entry,
+                    });
+                }
+            }
+            false // henüz eklenmedi — ping sonucunu bekle
+        }
+    }
+
+    /// LRU node'dan ping yanıtı geldi → candidate reddedilir, LRU tutulur.
+    /// Returns true if the ping was found and processed.
+    pub fn on_ping_response(&mut self, peer_id: &PeerId) -> bool {
+        let before = self.pending_pings.len();
+        self.pending_pings.retain(|p| &p.lru_peer != peer_id);
+        self.pending_pings.len() < before
+    }
+
+    /// Ping timeout'larını işle — yanıt vermeyen LRU node'ları evict et.
+    /// `now_ms`: mevcut zaman. Returns list of evicted peer IDs.
+    pub fn process_ping_timeouts(&mut self, now_ms: u64) -> Vec<PeerId> {
+        let mut evicted = Vec::new();
+        let mut to_add = Vec::new();
+
+        self.pending_pings.retain(|p| {
+            if now_ms >= p.ping_sent_ms + p.timeout_ms {
+                evicted.push(p.lru_peer.clone());
+                to_add.push(p.candidate.clone());
+                false // pending'den kaldır
             } else {
-                false
+                true
+            }
+        });
+
+        for evict_peer in &evicted {
+            self.entries.retain(|e| &e.peer_id != evict_peer);
+        }
+        for candidate in to_add {
+            if self.entries.len() < self.k {
+                self.entries.push(candidate);
             }
         }
+
+        evicted
     }
 
     pub fn remove(&mut self, peer_id: &PeerId) {
@@ -296,18 +370,83 @@ mod tests {
         assert_eq!(bucket.len(), 1);
     }
 
+    /// NOVA-RED-NETWORK-005: bucket doluyken LRU hemen evict edilmez — ping kuyruğuna girer
     #[test]
-    fn test_kbucket_full_eviction() {
+    fn test_kbucket_full_pending_ping_not_immediate_eviction() {
         let mut bucket = KBucket::new(2);
-        for i in 1u8..=3 {
-            bucket.insert(RoutingTableEntry {
+        // İlk 2 giriş → bucket dolar
+        for i in 1u8..=2 {
+            let added = bucket.insert(RoutingTableEntry {
                 kad_id: KademliaId::from_bytes([i; 32]),
                 peer_id: pid(i),
                 addr: format!("127.0.0.{i}:30333"),
                 last_seen_ms: i as u64 * 1000,
             });
+            assert!(added);
         }
-        assert_eq!(bucket.len(), 2); // Bucket boyutu aşılmaz
+
+        // 3. giriş → bucket dolu, hemen evict edilmemeli
+        let added = bucket.insert(RoutingTableEntry {
+            kad_id: KademliaId::from_bytes([3; 32]),
+            peer_id: pid(3),
+            addr: "127.0.0.3:30333".into(),
+            last_seen_ms: 3000,
+        });
+        assert!(!added, "bucket dolu — hemen eklenmemeli");
+        assert_eq!(bucket.len(), 2, "bucket boyutu 2 kalmali");
+        assert_eq!(bucket.pending_pings.len(), 1, "ping kuyruğunda 1 bekleme olmalı");
+    }
+
+    /// NOVA-RED-NETWORK-005: LRU ping'e cevap verirse candidate reddedilir
+    #[test]
+    fn test_kbucket_ping_response_keeps_lru() {
+        let mut bucket = KBucket::new(1);
+        let added = bucket.insert(RoutingTableEntry {
+            kad_id: KademliaId::from_bytes([1; 32]),
+            peer_id: pid(1),
+            addr: "127.0.0.1:30333".into(),
+            last_seen_ms: 1000,
+        });
+        assert!(added);
+
+        bucket.insert(RoutingTableEntry {
+            kad_id: KademliaId::from_bytes([2; 32]),
+            peer_id: pid(2),
+            addr: "127.0.0.2:30333".into(),
+            last_seen_ms: 2000,
+        });
+
+        // LRU (peer 1) ping'e cevap verdi → candidate (peer 2) reddedilmeli
+        let found = bucket.on_ping_response(&pid(1));
+        assert!(found, "ping yanıtı işlenmeli");
+        assert_eq!(bucket.pending_pings.len(), 0, "pending temizlenmeli");
+        assert_eq!(bucket.len(), 1, "LRU tutuldu, boyut aynı");
+        assert!(bucket.entries().iter().any(|e| e.peer_id == pid(1)), "LRU node hala mevcut");
+    }
+
+    /// NOVA-RED-NETWORK-005: ping timeout → LRU evict, candidate eklenir
+    #[test]
+    fn test_kbucket_ping_timeout_evicts_lru() {
+        let mut bucket = KBucket::new(1);
+        bucket.insert(RoutingTableEntry {
+            kad_id: KademliaId::from_bytes([1; 32]),
+            peer_id: pid(1),
+            addr: "127.0.0.1:30333".into(),
+            last_seen_ms: 1000,
+        });
+
+        bucket.insert(RoutingTableEntry {
+            kad_id: KademliaId::from_bytes([2; 32]),
+            peer_id: pid(2),
+            addr: "127.0.0.2:30333".into(),
+            last_seen_ms: 5000,
+        });
+
+        // Timeout geçti (5000 + 10000 + 1 = 15001)
+        let evicted = bucket.process_ping_timeouts(15001);
+        assert_eq!(evicted, vec![pid(1)], "LRU evict edilmeli");
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket.entries().iter().any(|e| e.peer_id == pid(2)), "candidate eklenmeli");
     }
 
     #[test]

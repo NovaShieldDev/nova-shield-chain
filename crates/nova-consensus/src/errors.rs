@@ -113,6 +113,12 @@ pub enum ConsensusError {
 
     // ── Genel ───────────────────────────────────────────────────────────────
 
+    /// Yetkisiz unbonding talebi — sadece validator kendisi unbonding başlatabilir.
+    ///
+    /// NOVA-RED-0005: begin_unbonding() initiator kontrolü.
+    #[error("yetkisiz unbonding: initiator {initiator} validator {validator} değil")]
+    UnauthorizedUnbonding { initiator: String, validator: String },
+
     /// İç hata.
     #[error("iç hata: {0}")]
     Internal(String),

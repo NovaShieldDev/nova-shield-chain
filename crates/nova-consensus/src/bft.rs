@@ -177,38 +177,51 @@ impl VoteCollector {
 
     /// QC üret (quorum varsa).
     ///
-    /// Önce BLS signed_votes dener (üretim path), yoksa mock'a düşer (test path).
-    /// Avalanchego `SignatureAggregator::Aggregate` pattern.
+    /// Üretim path: BLS signed_votes kullanır.
+    /// Test path (#[cfg(test)]): mock Vote'lardan QC üretir.
+    ///
+    /// ## NOVA-RED-CONSENSUS-003 Güvenlik Düzeltmesi
+    ///
+    /// Mock fallback yalnızca `#[cfg(test)]` bloğu içinde etkin.
+    /// Production build'de mock path derlenmez — saldırgan blake3 hash'i
+    /// taklit ederek sahte vote gönderse bile QC üretemez.
     fn try_produce_qc(&self, block_hash: BlockHash, slot: SlotId) -> Option<QuorumCertificate> {
         // Üretim: BLS signed oylar quorum sağladıysa → gerçek QC
         if self.signed_votes.len() >= quorum_threshold(self.total_validators) {
             return self.try_produce_qc_bls(block_hash, slot);
         }
 
-        // Mock fallback (mevcut testler için)
-        if !self.has_quorum() {
-            return None;
+        // Mock fallback — YALNIZCA test ortamında etkin (NOVA-RED-CONSENSUS-003)
+        // `test-utils` feature ile integration test crate'leri de bu path'e erişebilir.
+        #[cfg(any(test, feature = "test-utils"))]
+        {
+            if !self.has_quorum() {
+                return None;
+            }
+
+            let signers: Vec<ValidatorId> = self.votes.keys().cloned().collect();
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(block_hash.as_bytes());
+            hasher.update(&self.height.to_le_bytes());
+            for (validator, vote) in &self.votes {
+                hasher.update(&validator.0.to_le_bytes());
+                hasher.update(&vote.signature);
+            }
+            let hash = hasher.finalize();
+            let mut aggregate = vec![0u8; 96];
+            aggregate[..32].copy_from_slice(hash.as_bytes());
+
+            return Some(QuorumCertificate {
+                block_hash,
+                height: self.height,
+                signers,
+                aggregate_signature: aggregate,
+                signed_at_slot: slot,
+            });
         }
 
-        let signers: Vec<ValidatorId> = self.votes.keys().cloned().collect();
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(block_hash.as_bytes());
-        hasher.update(&self.height.to_le_bytes());
-        for (validator, vote) in &self.votes {
-            hasher.update(&validator.0.to_le_bytes());
-            hasher.update(&vote.signature);
-        }
-        let hash = hasher.finalize();
-        let mut aggregate = vec![0u8; 96];
-        aggregate[..32].copy_from_slice(hash.as_bytes());
-
-        Some(QuorumCertificate {
-            block_hash,
-            height: self.height,
-            signers,
-            aggregate_signature: aggregate,
-            signed_at_slot: slot,
-        })
+        // Production'da mock path yok — BLS quorum sağlanmadıysa QC üretilemez
+        None
     }
 }
 
@@ -381,6 +394,22 @@ impl BftEngine {
             return Err(ConsensusError::ValidatorNotFound {
                 validator_id: vote.validator.0.to_string(),
             });
+        }
+
+        // CONSENSUS-001: Oy imzasını doğrula — sahte oy saldırısını önle.
+        // İmza = blake3(block_hash || validator_id || height) ilk 32 byte.
+        {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(vote.block_hash.as_bytes());
+            hasher.update(&vote.validator.0.to_le_bytes());
+            hasher.update(&vote.height.to_le_bytes());
+            let expected = hasher.finalize();
+            if vote.signature[..32] != *expected.as_bytes() {
+                return Err(ConsensusError::Internal(format!(
+                    "oy imzası geçersiz: validator={}",
+                    vote.validator.0
+                )));
+            }
         }
 
         let height = vote.height;
@@ -1106,5 +1135,75 @@ mod tests {
             let qc = engine.process_signed_vote(signed, SlotId(400)).unwrap();
             assert!(qc.is_none(), "3 oy quorum sağlamamalı (gerekli: 4)");
         }
+    }
+
+    // ── NOVA-RED-CONSENSUS-002 regression testleri ────────────────────────────
+
+    /// Boş aggregate_signature ile QC reddedilmeli (eski: BLS doğrulama atlanıyordu)
+    #[test]
+    fn test_consensus002_empty_aggregate_signature_rejected() {
+        let engine = make_engine_with_bls(3);
+        let mut qc = make_bls_qc(bh(1), 1, &[1, 2], SlotId(100));
+        // Boş imza → uzunluk yanlış → QC reddedilmeli
+        qc.aggregate_signature = vec![];
+        let err = engine.verify_qc(&qc).unwrap_err();
+        assert!(
+            matches!(err, ConsensusError::Internal(_)),
+            "Boş aggregate_signature kabul edilemez: {:?}", err
+        );
+    }
+
+    /// Eksik uzunluklu aggregate_signature reddedilmeli
+    #[test]
+    fn test_consensus002_short_aggregate_signature_rejected() {
+        let engine = make_engine_with_bls(3);
+        let mut qc = make_bls_qc(bh(1), 1, &[1, 2], SlotId(100));
+        // 2 imzalayan × 96 byte = 192 byte beklenir; sadece 95 byte ver
+        qc.aggregate_signature = vec![0u8; 95];
+        let err = engine.verify_qc(&qc).unwrap_err();
+        assert!(
+            matches!(err, ConsensusError::Internal(_)),
+            "Kısa aggregate_signature kabul edilemez: {:?}", err
+        );
+    }
+
+    /// Fazla uzun aggregate_signature reddedilmeli
+    #[test]
+    fn test_consensus002_long_aggregate_signature_rejected() {
+        let engine = make_engine_with_bls(3);
+        let mut qc = make_bls_qc(bh(1), 1, &[1, 2], SlotId(100));
+        // 2 imzalayan × 96 = 192 beklenir; 193 byte ver
+        qc.aggregate_signature = vec![0u8; 193];
+        let err = engine.verify_qc(&qc).unwrap_err();
+        assert!(
+            matches!(err, ConsensusError::Internal(_)),
+            "Fazla uzun aggregate_signature kabul edilemez: {:?}", err
+        );
+    }
+
+    /// Geçerli BLS QC doğrulanmalı (CONSENSUS-002 bypass olmadan)
+    #[test]
+    fn test_consensus002_valid_bls_qc_accepted() {
+        let engine = make_engine_with_bls(3);
+        // 2/3 quorum için 2 imzalayan (quorum = ceil(2*3/3) = 2)
+        let qc = make_bls_qc(bh(1), 1, &[1, 2], SlotId(100));
+        assert!(
+            engine.verify_qc(&qc).is_ok(),
+            "Geçerli BLS QC reddedilmemeli"
+        );
+    }
+
+    /// Sıfır bayt (mock) imzalı QC BLS doğrulamada başarısız olmalı
+    #[test]
+    fn test_consensus002_zero_bytes_bls_signature_rejected() {
+        let engine = make_engine_with_bls(3);
+        let mut qc = make_bls_qc(bh(1), 1, &[1, 2], SlotId(100));
+        // Doğru uzunluk (192 byte) ama sıfır içerik → BLS doğrulama başarısız
+        qc.aggregate_signature = vec![0u8; 192];
+        let err = engine.verify_qc(&qc).unwrap_err();
+        assert!(
+            matches!(err, ConsensusError::Internal(_)),
+            "Sıfır baytlı sahte BLS imzası kabul edilemez: {:?}", err
+        );
     }
 }

@@ -565,6 +565,7 @@ impl AccountManager {
             guardian_id,
             signature,
             guardian_pubkey,
+            &state.guardian_set, // NOVA-RED-0007: kayıtlı guardian doğrulaması
             threshold,
             slot,
         )?;
@@ -664,6 +665,7 @@ impl AccountManager {
         let event = GuardianManager::report_misconduct(
             &mut state.guardian_set,
             report,
+            *address, // account owner — NOVA-RED-ACCOUNT-004
             slot,
         )?;
 
@@ -977,10 +979,21 @@ mod tests {
         use crate::recovery::RecoveryEngine;
         let mgr = make_manager();
         create_test_account(&mgr, test_address());
-        let request = mgr.initiate_recovery(&test_address(), vec![0x03; 33], None).unwrap();
-        // Gerçek ECDSA imzası oluştur
+
+        // NOVA-RED-0007: Guardian önce hesaba kayıtlı olmalı
         let kp = EcdsaKeypair::from_secret_bytes(&[0x77u8; 32]).unwrap();
         let pk = kp.public_key().unwrap();
+        mgr.add_guardian(
+            &test_address(),
+            "g1",
+            "Guardian 1",
+            GuardianCategory::Personal { address: test_address_2() },
+            pk.as_bytes().to_vec(),
+            None,
+        ).unwrap();
+
+        let request = mgr.initiate_recovery(&test_address(), vec![0x03; 33], None).unwrap();
+        // Gerçek ECDSA imzası oluştur
         let requester_hash = RecoveryEngine::compute_requester_hash(&request.requester_pubkey);
         // Manager test_slot() = SlotId(1_000_000) kullanıyor
         let slot = test_slot();

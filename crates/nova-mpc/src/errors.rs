@@ -98,6 +98,13 @@ pub enum MpcError {
     #[error("protokol iptal: suçlular={culprits:?} sebep={reason}")]
     ProtocolAbort { culprits: Vec<u32>, reason: String },
 
+    /// Agregasyon sonrası imza doğrulaması başarısız.
+    ///
+    /// NOVA-RED-MPC-002: Sahte partial imza gönderilerek geçersiz threshold imzası üretilebiliyordu.
+    /// `finalize()` sonrası `verify_threshold_signature()` imzayı reddetti.
+    #[error("imza doğrulaması başarısız: {reason}")]
+    SignatureVerificationFailed { reason: String },
+
     /// Tek bir taraf tespit edilerek iptal — matematiksel kanıt içerir.
     /// §6.1: "kötü niyetli taraf hem tespit edilir hem cezalandırılır"
     #[error("identifiable abort: suçlu={culprit} kanıt={}", hex::encode(evidence))]

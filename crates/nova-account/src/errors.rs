@@ -106,6 +106,20 @@ pub enum AccountError {
     #[error("yetkisiz kurtarma iptali: canceller {canceller} hesap sahibi {owner} değil")]
     UnauthorizedRecoveryCanceller { canceller: String, owner: String },
 
+    /// Yetkisiz misconduct reporter — sadece hesap sahibi veya aktif guardian raporlayabilir.
+    ///
+    /// NOVA-RED-ACCOUNT-004: herhangi biri sahte suistimal raporu göndererek
+    /// meşru guardian'ları askıya aldırabiliyordu.
+    #[error("yetkisiz suistimal reporter: {reporter} hesap sahibi veya aktif guardian değil")]
+    UnauthorizedMisconductReporter { reporter: String },
+
+    /// Yetkisiz kurtarma onaylayıcı — guardian hesapta kayıtlı değil veya pubkey eşleşmiyor.
+    ///
+    /// NOVA-RED-0007: `process_approval()` guardian_set kontrolü eklendi.
+    /// Önceki sürümde saldırgan kendi keypair'ini "guardian" olarak sunabiliyordu.
+    #[error("yetkisiz kurtarma onaylayıcı: {guardian_id} bu hesapta kayıtlı guardian değil")]
+    UnauthorizedApprover { guardian_id: String },
+
     // ─── Heartbeat Hataları ─────────────────────────────────────────────────
     /// Heartbeat imzası geçersiz.
     #[error("geçersiz heartbeat imzası: {address}")]

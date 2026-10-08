@@ -87,6 +87,14 @@ pub enum FreezeError {
     #[error("yanlış freeze bildirimi geçersiz: kayıt bulunamadı veya zaten çözüldü")]
     WrongFreezeReportInvalid,
 
+    /// Yanlış freeze bildirimi yetkisiz — sadece dondurulan hesap sahibi veya yetkili guardian bildirebilir.
+    #[error("yanlış freeze bildirimi yetkisiz: reporter={reporter}")]
+    UnauthorizedWrongFreezeReporter { reporter: String },
+
+    /// Guardian threshold'da aynı imzacı birden fazla kez gönderildi.
+    #[error("guardian threshold: tekrarlı imzacı tespit edildi — her guardian sadece bir kez sayılır")]
+    DuplicateGuardianSigner,
+
     // ─── Yapılandırma ───────────────────────────────────────────────────────
     /// Bu hesap için freeze yetkili guardian listesi tanımlı değil.
     #[error("hesap için freeze yetkili guardian listesi tanımlı değil")]

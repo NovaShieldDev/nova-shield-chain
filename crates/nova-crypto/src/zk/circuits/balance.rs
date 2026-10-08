@@ -121,4 +121,38 @@ mod tests {
         // Range check eklendi → kısıt sayısı artmalı
         assert!(cs.num_constraints() > 0, "Devre kısıtları oluşturulmalı");
     }
+
+    /// NOVA-RED-0006: Range check kısıtları gerçekten devreye alınmış mı?
+    /// 64-bit değerler için range check uygulandığını doğrular.
+    /// En az 64 * 3 = 192 bit kısıtı olmalı (3 değer × 64 bit).
+    #[test]
+    fn test_balance_circuit_range_check_constraints_present() {
+        let circuit = BalanceCircuit {
+            input_amount: Some(u64::MAX),
+            output_amount: Some(u64::MAX - 1),
+            fee: Some(1),
+        };
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        // Her değer için 64 bit × 3 = en az 192 kısıt (range check)
+        assert!(
+            cs.num_constraints() >= 192,
+            "Range check kısıtları eksik: {} kısıt var, en az 192 bekleniyor",
+            cs.num_constraints()
+        );
+        assert!(cs.is_satisfied().unwrap(), "u64::MAX değerleri geçerli olmalı");
+    }
+
+    /// NOVA-RED-0006: Sıfır değer geçerli olmalı.
+    #[test]
+    fn test_balance_circuit_zero_values_valid() {
+        let circuit = BalanceCircuit {
+            input_amount: Some(0),
+            output_amount: Some(0),
+            fee: Some(0),
+        };
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap(), "0 == 0 + 0 sağlanmalı");
+    }
 }

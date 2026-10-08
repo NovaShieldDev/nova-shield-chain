@@ -541,8 +541,13 @@ impl InheritancePlan {
         self.validate_heir_shares()?;
 
         // Kademeli devir adımları toplamı = 10000 (adım varsa)
+        // NOVA-RED-INHERITANCE-002: checked_add ile u32 overflow tespiti.
         if !self.release_steps.is_empty() {
-            let total: u32 = self.release_steps.iter().map(|s| s.fraction_bps).sum();
+            let total: u32 = self.release_steps.iter().try_fold(0u32, |acc, s| {
+                acc.checked_add(s.fraction_bps)
+            }).ok_or_else(|| InheritanceError::InvalidParameter(
+                "kademeli devir adımları fraction_bps toplamı u32 taşması".to_string(),
+            ))?;
             if total != 10_000 {
                 return Err(InheritanceError::InvalidParameter(
                     format!("kademeli devir adımları toplamı {total} bps (10000 olmalı)"),

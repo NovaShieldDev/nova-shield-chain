@@ -2,17 +2,23 @@
 //!
 //! §5.7.2 — Her UTXO harcanınca bir nullifier üretilir.
 //!
-//! ## R1CS Kısıtı (MiMC cubic, BN254)
+//! ## R1CS Kısıtı (MiMC10 PRF, BN254)
 //!
-//! `nullifier_fe = (sk_fe + cm_fe)^3`
+//! `nullifier_fe = MiMC10(sk_fe, cm_fe)`
 //!
 //! - `sk_fe`      : secret_key baytlarının BN254 alan elemanı (witness)
 //! - `cm_fe`      : commitment baytlarının alan elemanı (public input)
 //! - `nullifier_fe`: çıktı alan elemanı (public input)
 //!
-//! 2 çarpma kapısı: `tmp = (sk+cm)²`, `nf = tmp*(sk+cm)`
+//! ## CRYPTO-002 Güvenlik Düzeltmesi
 //!
-//! Off-chain `compute_nullifier_field` aynı formülü kullanır → tutarlı.
+//! Eski formül `(sk + cm)^3` BN254 Fr alanında **tersine çevrilebilirdi**:
+//! Saldırgan public `(cm_fe, nullifier_fe)` değerlerinden küp kök alarak
+//! `sum = nullifier^{3^{-1} mod (r-1)}` hesaplayıp `sk = sum - cm` bulabilirdi.
+//!
+//! Yeni formül **MiMC10 PRF** (tek yönlü): 10 tur Feistel, her tur `t^3`
+//! uygulandığından tersine çevrilmesi gizli tur sabitlerini gerektiriyor.
+//! Transfer devresindeki MiMC10 commitment ile aynı yapı, farklı domain.
 //!
 //! Referans: penumbra nullifier (05-penumbra.md)
 
@@ -21,6 +27,8 @@ use ark_ff::PrimeField;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_r1cs_std::prelude::*;
 use ark_r1cs_std::fields::fp::FpVar;
+
+use super::transfer::{mimc10_commitment, mimc10_commitment_gadget};
 
 /// Nullifier devresi.
 /// Kanıtlar: UTXO'yu harcayan kişi gizli anahtarı biliyor.
@@ -65,13 +73,10 @@ impl ConstraintSynthesizer<Fr> for NullifierCircuit {
             || Ok(nf_fe),
         )?;
 
-        // ── Kısıt: nullifier_fe = (sk_fe + cm_fe)^3 ──────────────────────────
-        // R1CS: 2 çarpma kapısı
-        //   tmp     = (sk + cm) * (sk + cm)
-        //   nf_comp = tmp       * (sk + cm)
-        let sum = &sk_var + &cm_var;
-        let tmp = &sum * &sum;
-        let nf_computed = &tmp * &sum;
+        // ── Kısıt: nullifier_fe = MiMC10(sk_fe, cm_fe) ──────────────────────
+        // CRYPTO-002 fix: (sk+cm)^3 yerine MiMC10 PRF kullanılıyor.
+        // 10 tur × 2 çarpma = 20 R1CS kısıtı.
+        let nf_computed = mimc10_commitment_gadget(cs.clone(), &sk_var, &cm_var)?;
         nf_computed.enforce_equal(&nf_var)?;
 
         Ok(())
@@ -82,15 +87,18 @@ impl ConstraintSynthesizer<Fr> for NullifierCircuit {
 
 /// Nullifier hesapla — off-chain witness üretimi için.
 ///
-/// **Alan tabanlı formül** (R1CS kısıtıyla tutarlı):
-/// `nullifier_fe = (sk_fe + cm_fe)^3`
+/// **MiMC10 PRF** (R1CS kısıtıyla tutarlı):
+/// `nullifier_fe = MiMC10(sk_fe, cm_fe)`
+///
+/// CRYPTO-002 fix: Eski `(sk+cm)^3` tersine çevrilebilirdi — gizli anahtar kurtarma.
+/// MiMC10 tek yönlü PRF, tersine çevrilemez.
 ///
 /// Dönen 32 byte, `NullifierCircuit::expected_nullifier`'a doğrudan girilebilir.
 pub fn compute_nullifier_field(secret_key: &[u8; 32], utxo_commitment: &[u8; 32]) -> [u8; 32] {
     let sk_fe = Fr::from_le_bytes_mod_order(secret_key.as_slice());
     let cm_fe = Fr::from_le_bytes_mod_order(utxo_commitment.as_slice());
-    let sum = sk_fe + cm_fe;
-    let nf_fe = sum * sum * sum; // (sk + cm)^3
+    // MiMC10(sk, cm) — sk = message, cm = key
+    let nf_fe = mimc10_commitment(sk_fe, cm_fe);
     let nf_big = nf_fe.into_bigint();
     let nf_bytes = ark_ff::BigInteger::to_bytes_le(&nf_big);
     let mut out = [0u8; 32];

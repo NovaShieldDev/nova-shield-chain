@@ -175,11 +175,20 @@ impl RecoveryEngine {
     /// - Sağlandıysa → `NextRound()` (WaitingPeriod'a geç)
     ///
     /// Rolling Shutter: her keyper kendi epoch secret key share'ini gönderir.
+    ///
+    /// ## NOVA-RED-0007 Güvenlik Düzeltmesi
+    ///
+    /// `guardian_set: &GuardianSet` parametresi eklendi.
+    /// Guardian'ın hesapta kayıtlı olup olmadığı ve `signing_pubkey`'inin
+    /// kayıtlı değerle eşleşip eşleşmediği kontrol edilir.
+    /// Önceki sürümde saldırgan kendi keypair'ini "guardian" olarak sunup
+    /// onay sayısını artırabiliyordu.
     pub fn process_approval(
         request: &mut RecoveryRequest,
         guardian_id: impl Into<String>,
         guardian_signature: Vec<u8>,
         guardian_pubkey: &[u8],
+        guardian_set: &GuardianSet,
         threshold: u8,
         current_slot: SlotId,
     ) -> AccountResult<RecoveryPhase> {
@@ -203,6 +212,22 @@ impl RecoveryEngine {
                 });
             }
             _ => {}
+        }
+
+        // NOVA-RED-0007: Guardian'ın bu hesapta kayıtlı olup olmadığını doğrula.
+        // Kayıtlı değilse reddedilir — yetkisiz onay saldırısı engellenir.
+        let registered = guardian_set.guardians.get(&guardian_id).ok_or_else(|| {
+            AccountError::UnauthorizedApprover {
+                guardian_id: guardian_id.clone(),
+            }
+        })?;
+
+        // NOVA-RED-0007: Sağlanan pubkey, kayıtlı signing_pubkey ile eşleşmeli.
+        // Saldırgan başka guardian'ın ID'sini kullanıp kendi pubkey'ini sunamaz.
+        if guardian_pubkey != registered.signing_pubkey.as_slice() {
+            return Err(AccountError::UnauthorizedApprover {
+                guardian_id: guardian_id.clone(),
+            });
         }
 
         // NOVA-RED-ACCOUNT-001: Gerçek kriptografik imza doğrulaması
@@ -553,7 +578,10 @@ impl RecoveryEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AccountConfig, AccountId, AccountState, GuardianSet, ThresholdConfig};
+    use crate::types::{
+        AccountConfig, AccountId, AccountState, GuardianCategory, GuardianPartyId,
+        GuardianPreferences, GuardianRecord, GuardianSet, GuardianStatus, ThresholdConfig,
+    };
     use nova_crypto::{EcdsaKeypair};
     use nova_primitives::crypto::Hash;
 
@@ -564,6 +592,34 @@ mod tests {
         secret[0] = seed;
         secret[1] = 0xAB; // ayırt edici
         EcdsaKeypair::from_secret_bytes(&secret).expect("test keypair oluşturulamadı")
+    }
+
+    /// Test yardımcısı: Verilen seed'lere göre GuardianSet oluştur.
+    /// `seeds`: (seed_u8, guardian_id) çiftleri.
+    /// Her guardian için keypair üretilir, signing_pubkey kaydedilir.
+    fn make_guardian_set(seeds: &[(u8, &str)]) -> GuardianSet {
+        let mut gs = GuardianSet::new(ThresholdConfig::DEFAULT, test_slot());
+        for (seed, gid) in seeds {
+            let kp = make_guardian_keypair(*seed);
+            let pk = kp.public_key().expect("pubkey alınamadı");
+            let pk_bytes = pk.as_bytes().to_vec();
+            let record = GuardianRecord {
+                party_id: GuardianPartyId::new(*gid, *gid, &pk_bytes),
+                category: GuardianCategory::Personal {
+                    address: Address::from_bytes([*seed; 20]),
+                },
+                signing_pubkey: pk_bytes,
+                status: GuardianStatus::Active,
+                registered_at_slot: test_slot(),
+                last_active_slot: test_slot(),
+                signatures_provided: 0,
+                missed_signing_requests: 0,
+                false_freeze_attempts: 0,
+                preferences: GuardianPreferences::default(),
+            };
+            gs.guardians.insert(gid.to_string(), record);
+        }
+        gs
     }
 
     /// Test yardımcısı: Guardian approval imzası oluştur.
@@ -677,12 +733,14 @@ mod tests {
     #[test]
     fn onay_eklenir() {
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(1, "g1"), (2, "g2"), (3, "g3")]);
         let (pk, sig) = sign_approval(&req, 1, test_slot());
         let phase = RecoveryEngine::process_approval(
             &mut req,
             "g1",
             sig,
             &pk,
+            &gs,
             3, // threshold
             test_slot(),
         ).unwrap();
@@ -693,6 +751,7 @@ mod tests {
     #[test]
     fn threshold_saglandikta_waiting_period_baslar() {
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(10, "g0"), (11, "g1"), (12, "g2")]);
         for i in 0u8..3 {
             let guardian_id = format!("g{}", i);
             let (pk, sig) = sign_approval(&req, i + 10, test_slot());
@@ -701,6 +760,7 @@ mod tests {
                 &guardian_id,
                 sig,
                 &pk,
+                &gs,
                 3,
                 test_slot(),
             ).unwrap();
@@ -717,12 +777,14 @@ mod tests {
     #[test]
     fn bos_imza_reddedilir() {
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(1, "g1")]);
         let (pk, _) = sign_approval(&req, 1, test_slot());
         let result = RecoveryEngine::process_approval(
             &mut req,
             "g1",
             vec![], // boş imza
             &pk,
+            &gs,
             3,
             test_slot(),
         );
@@ -733,6 +795,7 @@ mod tests {
     fn yanlis_imza_reddedilir() {
         // NOVA-RED-ACCOUNT-001 regression: Geçersiz imza reddedilmeli
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(1, "g1")]);
         let (pk, _correct_sig) = sign_approval(&req, 1, test_slot());
         // Başka bir keypair'in imzasını gönder → doğrulama başarısız
         let (_, wrong_sig) = sign_approval(&req, 99, test_slot());
@@ -741,6 +804,7 @@ mod tests {
             "g1",
             wrong_sig,
             &pk,
+            &gs,
             3,
             test_slot(),
         );
@@ -756,11 +820,12 @@ mod tests {
     fn yurutme_bekleme_suresi_dolmadan_reddedilir() {
         let mut state = make_account_state();
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(20, "g0"), (21, "g1"), (22, "g2")]);
         // Threshold'u karşıla
         for i in 0u8..3 {
             let (pk, sig) = sign_approval(&req, i + 20, test_slot());
             RecoveryEngine::process_approval(
-                &mut req, &format!("g{}", i), sig, &pk, 3, test_slot(),
+                &mut req, &format!("g{}", i), sig, &pk, &gs, 3, test_slot(),
             ).unwrap();
         }
         // Hemen yürütmeye çalış (48 saat dolmadan)
@@ -774,10 +839,11 @@ mod tests {
     fn yurutme_48_saat_sonra_basarili() {
         let mut state = make_account_state();
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(30, "g0"), (31, "g1"), (32, "g2")]);
         for i in 0u8..3 {
             let (pk, sig) = sign_approval(&req, i + 30, test_slot());
             RecoveryEngine::process_approval(
-                &mut req, &format!("g{}", i), sig, &pk, 3, test_slot(),
+                &mut req, &format!("g{}", i), sig, &pk, &gs, 3, test_slot(),
             ).unwrap();
         }
         // 48 saat sonrası slot
@@ -794,11 +860,12 @@ mod tests {
     fn yurutme_yetersiz_onay_reddedilir() {
         let mut state = make_account_state();
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(40, "g0"), (41, "g1")]);
         // Sadece 2 onay (threshold 3)
         for i in 0u8..2 {
             let (pk, sig) = sign_approval(&req, i + 40, test_slot());
             RecoveryEngine::process_approval(
-                &mut req, &format!("g{}", i), sig, &pk, 3, test_slot(),
+                &mut req, &format!("g{}", i), sig, &pk, &gs, 3, test_slot(),
             ).unwrap();
         }
         let execute_slot = req.executes_at_slot;
@@ -812,10 +879,11 @@ mod tests {
     fn yurutme_suresi_dolan_talep_reddedilir() {
         let mut state = make_account_state();
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(50, "g0"), (51, "g1"), (52, "g2")]);
         for i in 0u8..3 {
             let (pk, sig) = sign_approval(&req, i + 50, test_slot());
             RecoveryEngine::process_approval(
-                &mut req, &format!("g{}", i), sig, &pk, 3, test_slot(),
+                &mut req, &format!("g{}", i), sig, &pk, &gs, 3, test_slot(),
             ).unwrap();
         }
         // 30 günden fazla sonra (süresi doldu)
@@ -923,9 +991,10 @@ mod tests {
     #[test]
     fn bekleyen_onaylar_dogru_hesaplanir() {
         let mut req = make_recovery_request();
+        let gs = make_guardian_set(&[(60, "g1")]);
         let (pk, sig) = sign_approval(&req, 60, test_slot());
         RecoveryEngine::process_approval(
-            &mut req, "g1", sig, &pk, 3, test_slot(),
+            &mut req, "g1", sig, &pk, &gs, 3, test_slot(),
         ).unwrap();
 
         let all_ids: Vec<String> = vec!["g1".into(), "g2".into(), "g3".into()];
@@ -949,5 +1018,52 @@ mod tests {
         let req = make_recovery_request();
         let expired_ts = test_timestamp() + RECOVERY_EXPIRY_SECS + 1;
         assert!(!RecoveryEngine::is_request_active(&req, expired_ts));
+    }
+
+    /// NOVA-RED-0007: Kayıtlı olmayan guardian onay veremez.
+    /// Saldırgan kendi keypair'ini "guardian" olarak sunup threshold'u geçemiyor.
+    #[test]
+    fn test_kayitsiz_guardian_onay_veremez() {
+        let mut req = make_recovery_request();
+        // Boş guardian_set — hiç kayıtlı guardian yok
+        let empty_gs = make_guardian_set(&[]);
+        // Saldırgan kendi keypair'i ile imzalıyor ama "g1" ID'si guardian_set'te yok
+        let (pk, sig) = sign_approval(&req, 77, test_slot());
+        let err = RecoveryEngine::process_approval(
+            &mut req,
+            "g1",     // gerçek guardian ID iddiası
+            sig,
+            &pk,
+            &empty_gs, // bu hesapta hiç guardian kayıtlı değil
+            3,
+            test_slot(),
+        ).unwrap_err();
+        assert!(
+            matches!(err, AccountError::UnauthorizedApprover { .. }),
+            "Kayıtsız guardian reddedilmeli: {:?}", err
+        );
+    }
+
+    /// NOVA-RED-0007: Yanlış pubkey ile (başka keypair) kayıtlı guardian ID'si sunulamaz.
+    #[test]
+    fn test_yanlis_pubkey_ile_guardian_onay_veremez() {
+        let mut req = make_recovery_request();
+        // "g1" seed=1 ile kayıtlı
+        let gs = make_guardian_set(&[(1, "g1")]);
+        // Saldırgan seed=77 ile imzalıyor, seed=77'nin pubkey'ini gönderiyor
+        let (attacker_pk, attacker_sig) = sign_approval(&req, 77, test_slot());
+        let err = RecoveryEngine::process_approval(
+            &mut req,
+            "g1",          // kayıtlı ID
+            attacker_sig,
+            &attacker_pk,  // kayıtlı pubkey'den farklı
+            &gs,
+            3,
+            test_slot(),
+        ).unwrap_err();
+        assert!(
+            matches!(err, AccountError::UnauthorizedApprover { .. }),
+            "Yanlış pubkey ile onay reddedilmeli: {:?}", err
+        );
     }
 }

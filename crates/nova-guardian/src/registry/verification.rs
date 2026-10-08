@@ -1,6 +1,6 @@
 //! Guardian doğrulama — KYC/AML ve SLA onayı
 
-use crate::errors::GuardianResult;
+use crate::errors::{GuardianError, GuardianResult};
 use crate::registry::categories::KycStatus;
 use crate::registry::registration::{GuardianRegistry, GuardianStatus};
 use nova_primitives::Address;
@@ -48,14 +48,35 @@ impl SlaTerms {
 // ─── KycVerifier ──────────────────────────────────────────────────────────────
 
 /// KYC doğrulama motoru (production'da gerçek KYC API ile entegre olur)
-pub struct KycVerifier;
+///
+/// ## GUARDIAN-001 (NOVA-RED-GUARDIAN-001) Güvenlik Düzeltmesi
+///
+/// `KycVerifier` artık yetkili operatör adresini tutar.
+/// `approve()` ve `reject()` yalnızca `authorized_operator` adresinden çağrılabilir.
+/// Önceki sürümde herhangi biri bu fonksiyonları çağırabiliyordu.
+pub struct KycVerifier {
+    /// Yetkili KYC operatörü (governance / admin adresi)
+    authorized_operator: Address,
+}
 
 impl KycVerifier {
+    /// Yeni KycVerifier oluştur
+    pub fn new(authorized_operator: Address) -> Self {
+        Self { authorized_operator }
+    }
+
     /// Kurumsal guardian KYC'yi onayla
+    ///
+    /// NOVA-RED-GUARDIAN-001: `operator` yalnızca `authorized_operator` ise işlem gerçekleşir.
     pub fn approve(
+        &self,
         registry: &GuardianRegistry,
+        operator: Address,
         guardian_id: &Address,
     ) -> GuardianResult<()> {
+        if operator != self.authorized_operator {
+            return Err(GuardianError::Unauthorized);
+        }
         let g = registry.get(guardian_id)?;
         if g.kyc_status == KycStatus::Verified {
             return Ok(()); // zaten onaylı
@@ -67,10 +88,17 @@ impl KycVerifier {
     }
 
     /// KYC reddet
+    ///
+    /// NOVA-RED-GUARDIAN-001: `operator` yalnızca `authorized_operator` ise işlem gerçekleşir.
     pub fn reject(
+        &self,
         registry: &GuardianRegistry,
+        operator: Address,
         guardian_id: &Address,
     ) -> GuardianResult<()> {
+        if operator != self.authorized_operator {
+            return Err(GuardianError::Unauthorized);
+        }
         registry.update(guardian_id, |guard| {
             guard.kyc_status = KycStatus::Rejected;
             guard.status = GuardianStatus::Deactivated;
@@ -95,12 +123,15 @@ mod tests {
             .unwrap()
     }
 
+    fn operator() -> Address { addr(99) }
+    fn kyc_verifier() -> KycVerifier { KycVerifier::new(operator()) }
+
     #[test]
     fn test_kyc_approve() {
         let registry = GuardianRegistry::new();
         registry.register(institutional_guardian(1)).unwrap();
 
-        KycVerifier::approve(&registry, &addr(1)).unwrap();
+        kyc_verifier().approve(&registry, operator(), &addr(1)).unwrap();
         let g = registry.get(&addr(1)).unwrap();
         assert_eq!(g.kyc_status, KycStatus::Verified);
         assert!(g.status.is_active());
@@ -110,10 +141,34 @@ mod tests {
     fn test_kyc_reject() {
         let registry = GuardianRegistry::new();
         registry.register(institutional_guardian(2)).unwrap();
-        KycVerifier::reject(&registry, &addr(2)).unwrap();
+        kyc_verifier().reject(&registry, operator(), &addr(2)).unwrap();
         let g = registry.get(&addr(2)).unwrap();
         assert_eq!(g.kyc_status, KycStatus::Rejected);
         assert!(matches!(g.status, GuardianStatus::Deactivated));
+    }
+
+    /// NOVA-RED-GUARDIAN-001: Yetkisiz operatör approve'u reddedilmeli
+    #[test]
+    fn test_kyc_approve_unauthorized_rejected() {
+        let registry = GuardianRegistry::new();
+        registry.register(institutional_guardian(3)).unwrap();
+        let err = kyc_verifier().approve(&registry, addr(42), &addr(3));
+        assert!(
+            matches!(err, Err(crate::errors::GuardianError::Unauthorized)),
+            "Yetkisiz KYC onayı reddedilmeli: {:?}", err
+        );
+    }
+
+    /// NOVA-RED-GUARDIAN-001: Yetkisiz operatör reject'i reddedilmeli
+    #[test]
+    fn test_kyc_reject_unauthorized_rejected() {
+        let registry = GuardianRegistry::new();
+        registry.register(institutional_guardian(4)).unwrap();
+        let err = kyc_verifier().reject(&registry, addr(42), &addr(4));
+        assert!(
+            matches!(err, Err(crate::errors::GuardianError::Unauthorized)),
+            "Yetkisiz KYC reddi reddedilmeli: {:?}", err
+        );
     }
 
     #[test]

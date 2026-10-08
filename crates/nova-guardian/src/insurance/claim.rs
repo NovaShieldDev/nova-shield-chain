@@ -2,6 +2,11 @@
 //!
 //! Başarısız kurtarma sonrası kullanıcı sigorta talebinde bulunur.
 //! Talep incelenir, onaylanır veya reddedilir.
+//!
+//! ## GUARDIAN-001 Güvenlik Düzeltmesi
+//!
+//! `approve()` ve `reject()` artık `approver: Address` parametresi alır.
+//! Yalnızca `ClaimStore::authorized_approver` olarak kayıtlı adres onaylayabilir.
 
 use crate::errors::{GuardianError, GuardianResult};
 use dashmap::DashMap;
@@ -83,15 +88,30 @@ impl InsuranceClaim {
 
 // ─── ClaimStore ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default)]
+/// GUARDIAN-001: ClaimStore artık bir `authorized_approver` tutar.
+/// Yalnızca bu adres `approve()`/`reject()` çağırabilir.
+#[derive(Debug)]
 pub struct ClaimStore {
     claims: Arc<DashMap<ClaimId, InsuranceClaim>>,
     next_id: Arc<AtomicU64>,
+    /// Tek yetkili onaylayıcı (sigorta governance modülü adresi).
+    authorized_approver: Address,
+}
+
+impl Default for ClaimStore {
+    fn default() -> Self {
+        // Varsayılan onaylayıcı = sıfır adres (production'da mutlaka override edilmeli)
+        Self::new(Address::from_bytes([0u8; 20]))
+    }
 }
 
 impl ClaimStore {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(authorized_approver: Address) -> Self {
+        Self {
+            claims: Arc::new(DashMap::new()),
+            next_id: Arc::new(AtomicU64::new(0)),
+            authorized_approver,
+        }
     }
 
     /// Yeni talep oluştur
@@ -119,8 +139,18 @@ impl ClaimStore {
         id
     }
 
-    /// Talebi onayla
-    pub fn approve(&self, id: ClaimId, approved_amount: u128, slot: SlotId) -> GuardianResult<()> {
+    /// Talebi onayla — yalnızca `authorized_approver` çağırabilir (GUARDIAN-001)
+    pub fn approve(
+        &self,
+        approver: Address,
+        id: ClaimId,
+        approved_amount: u128,
+        slot: SlotId,
+    ) -> GuardianResult<()> {
+        // GUARDIAN-001: Yetki kontrolü — yalnızca kayıtlı onaylayıcı
+        if approver != self.authorized_approver {
+            return Err(GuardianError::Unauthorized);
+        }
         let mut claim =
             self.claims.get_mut(&id).ok_or(GuardianError::ClaimNotFound)?;
         if !claim.is_pending() {
@@ -132,8 +162,12 @@ impl ClaimStore {
         Ok(())
     }
 
-    /// Talebi reddet
-    pub fn reject(&self, id: ClaimId, slot: SlotId) -> GuardianResult<()> {
+    /// Talebi reddet — yalnızca `authorized_approver` çağırabilir (GUARDIAN-001)
+    pub fn reject(&self, approver: Address, id: ClaimId, slot: SlotId) -> GuardianResult<()> {
+        // GUARDIAN-001: Yetki kontrolü — yalnızca kayıtlı onaylayıcı
+        if approver != self.authorized_approver {
+            return Err(GuardianError::Unauthorized);
+        }
         let mut claim =
             self.claims.get_mut(&id).ok_or(GuardianError::ClaimNotFound)?;
         if !claim.is_pending() {
@@ -190,11 +224,15 @@ mod tests {
         Address::from_bytes([n; 20])
     }
 
+    /// Test için yetkili onaylayıcı (addr 99 = insurance governance)
+    fn approver() -> Address { addr(99) }
+    fn store() -> ClaimStore { ClaimStore::new(approver()) }
+
     const NSC: u128 = 1_000_000_000_000_000_000;
 
     #[test]
     fn test_submit_claim() {
-        let store = ClaimStore::new();
+        let store = store();
         let id = store.submit_claim(
             addr(1),
             addr(2),
@@ -209,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_approve_claim() {
-        let store = ClaimStore::new();
+        let store = store();
         let id = store.submit_claim(
             addr(1),
             addr(2),
@@ -217,7 +255,7 @@ mod tests {
             100 * NSC,
             SlotId(0),
         );
-        store.approve(id, 50 * NSC, SlotId(100)).unwrap();
+        store.approve(approver(), id, 50 * NSC, SlotId(100)).unwrap();
         let claim = store.get(id).unwrap();
         assert_eq!(claim.status, ClaimStatus::Approved);
         assert_eq!(claim.approved_amount, Some(50 * NSC));
@@ -225,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_reject_claim() {
-        let store = ClaimStore::new();
+        let store = store();
         let id = store.submit_claim(
             addr(1),
             addr(2),
@@ -233,14 +271,14 @@ mod tests {
             50 * NSC,
             SlotId(0),
         );
-        store.reject(id, SlotId(200)).unwrap();
+        store.reject(approver(), id, SlotId(200)).unwrap();
         let claim = store.get(id).unwrap();
         assert_eq!(claim.status, ClaimStatus::Rejected);
     }
 
     #[test]
     fn test_double_approve_rejected() {
-        let store = ClaimStore::new();
+        let store = store();
         let id = store.submit_claim(
             addr(1),
             addr(2),
@@ -248,14 +286,17 @@ mod tests {
             100 * NSC,
             SlotId(0),
         );
-        store.approve(id, 75 * NSC, SlotId(100)).unwrap();
+        store.approve(approver(), id, 75 * NSC, SlotId(100)).unwrap();
         // Zaten onaylandı — hata bekleniyor
-        assert!(matches!(store.approve(id, 75 * NSC, SlotId(200)), Err(GuardianError::InvalidClaimStatus)));
+        assert!(matches!(
+            store.approve(approver(), id, 75 * NSC, SlotId(200)),
+            Err(GuardianError::InvalidClaimStatus)
+        ));
     }
 
     #[test]
     fn test_mark_paid() {
-        let store = ClaimStore::new();
+        let store = store();
         let id = store.submit_claim(
             addr(1),
             addr(2),
@@ -263,7 +304,7 @@ mod tests {
             100 * NSC,
             SlotId(0),
         );
-        store.approve(id, 100 * NSC, SlotId(10)).unwrap();
+        store.approve(approver(), id, 100 * NSC, SlotId(10)).unwrap();
         store.mark_paid(id).unwrap();
         let claim = store.get(id).unwrap();
         assert_eq!(claim.status, ClaimStatus::Paid);
@@ -279,12 +320,30 @@ mod tests {
 
     #[test]
     fn test_pending_claims_filter() {
-        let store = ClaimStore::new();
+        let store = store();
         let id1 = store.submit_claim(addr(1), addr(10), ClaimReason::RecoveryRefused, 100 * NSC, SlotId(0));
         store.submit_claim(addr(2), addr(10), ClaimReason::SlaViolation, 50 * NSC, SlotId(0));
-        store.approve(id1, 100 * NSC, SlotId(10)).unwrap();
+        store.approve(approver(), id1, 100 * NSC, SlotId(10)).unwrap();
 
         let pending = store.pending_claims();
         assert_eq!(pending.len(), 1);
+    }
+
+    /// GUARDIAN-001: Yetkisiz onaylayıcı reddedilmeli
+    #[test]
+    fn test_approve_unauthorized_rejected() {
+        let store = store();
+        let id = store.submit_claim(addr(1), addr(2), ClaimReason::SlaViolation, 50 * NSC, SlotId(0));
+        let err = store.approve(addr(42), id, 50 * NSC, SlotId(10));
+        assert!(matches!(err, Err(GuardianError::Unauthorized)), "yetkisiz onaylayıcı reddedilmeli");
+    }
+
+    /// GUARDIAN-001: Yetkisiz reddetme reddedilmeli
+    #[test]
+    fn test_reject_unauthorized_rejected() {
+        let store = store();
+        let id = store.submit_claim(addr(1), addr(2), ClaimReason::SlaViolation, 50 * NSC, SlotId(0));
+        let err = store.reject(addr(42), id, SlotId(10));
+        assert!(matches!(err, Err(GuardianError::Unauthorized)), "yetkisiz red reddedilmeli");
     }
 }

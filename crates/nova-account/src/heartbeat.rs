@@ -254,12 +254,33 @@ impl HeartbeatProcessor {
                 duress_count = hb_state.duress_count,
                 "DURESS HEARTBEAT — gizli alarm tetiklendi! Guardian'lara bildirim gönderilmeli"
             );
-            // Duress heartbeat dışarıdan normal görünür ama alarm flag'i set edilir
-            // NOT: Return'den önce guardian'lara bildirim gönderilmeli (üst katman sorumluluğu)
+
+            // NOVA-RED-ACCOUNT-005: Duress heartbeat de bir "hayatta olduğunu kanıtlama" sinyalidir.
+            // Slot ve aktivite bilgilerini güncelle; grace period'u gerçekten iptal et.
+            // Önceki sürümde state güncellenmeden inheritance_cancelled=true dönülüyordu —
+            // caller grace period'un iptal edildiğini sanıp ilerlerken state tutarsız kalıyordu.
+            hb_state.last_heartbeat_slot = submission.slot;
+            hb_state.last_activity_slot = submission.slot;
+            hb_state.total_heartbeats += 1;
+
+            state.last_heartbeat_slot = submission.slot;
+            state.last_activity_slot = submission.slot;
+            state.heartbeat_count = hb_state.total_heartbeats;
+
+            let inheritance_cancelled = hb_state.grace_period_started_at.is_some();
+            if inheritance_cancelled {
+                hb_state.grace_period_started_at = None;
+                hb_state.grace_period_ends_at = None;
+                info!(
+                    account = %state.address_hex(),
+                    "grace period duress heartbeat ile iptal edildi"
+                );
+            }
+
             return Ok(HeartbeatProcessResult {
                 is_duress: true,
                 activity_reset: true,
-                inheritance_cancelled: hb_state.grace_period_started_at.is_some(),
+                inheritance_cancelled,
                 guardian_alarm: true,
                 heartbeat_hash: submission.signed_hash,
             });
@@ -690,6 +711,72 @@ mod tests {
         assert!(r.is_duress);
         assert!(r.guardian_alarm);
         assert_eq!(hb_state.duress_count, 1);
+    }
+
+    /// NOVA-RED-ACCOUNT-005: Duress heartbeat state güncellemesi yapılmalı.
+    /// Önceki sürümde last_heartbeat_slot, last_activity_slot güncellenmiyordu.
+    #[test]
+    fn test_duress_heartbeat_state_guncellenir() {
+        let mut state = make_account_state();
+        let mut hb_state = make_heartbeat_state();
+        let initial_slot = test_slot();
+        let submit_slot = SlotId(initial_slot.0 + HEARTBEAT_MIN_INTERVAL_SECS * 1000 / MS_PER_SLOT + 1);
+        let hb = make_heartbeat(submit_slot, true);
+
+        HeartbeatProcessor::process_heartbeat(&mut state, &mut hb_state, hb, 1_700_000_000).unwrap();
+
+        // NOVA-RED-ACCOUNT-005: Slot bilgileri güncellenmeli
+        assert_eq!(hb_state.last_heartbeat_slot, submit_slot, "last_heartbeat_slot güncellenmeli");
+        assert_eq!(hb_state.last_activity_slot, submit_slot, "last_activity_slot güncellenmeli");
+        assert_eq!(hb_state.total_heartbeats, 1, "total_heartbeats artmalı");
+        assert_eq!(state.last_heartbeat_slot, submit_slot, "state.last_heartbeat_slot güncellenmeli");
+        assert_eq!(state.last_activity_slot, submit_slot, "state.last_activity_slot güncellenmeli");
+    }
+
+    /// NOVA-RED-ACCOUNT-005: Duress heartbeat aktif grace period'u iptal etmeli.
+    /// Önceki sürümde inheritance_cancelled=true dönülürken grace period aslında iptal edilmiyordu.
+    #[test]
+    fn test_duress_heartbeat_grace_period_gercekten_iptal_eder() {
+        let mut state = make_account_state();
+        let mut hb_state = make_heartbeat_state();
+
+        // Grace period aktifleştir
+        let grace_ends = SlotId(test_slot().0 + 1_000_000);
+        hb_state.grace_period_started_at = Some(test_slot());
+        hb_state.grace_period_ends_at = Some(grace_ends);
+
+        let submit_slot = SlotId(test_slot().0 + HEARTBEAT_MIN_INTERVAL_SECS * 1000 / MS_PER_SLOT + 1);
+        let hb = make_heartbeat(submit_slot, true);
+
+        let result = HeartbeatProcessor::process_heartbeat(
+            &mut state, &mut hb_state, hb, 1_700_000_000,
+        ).unwrap();
+
+        // Sonuç: inheritance_cancelled=true bildirilmeli
+        assert!(result.inheritance_cancelled, "inheritance_cancelled true olmalı");
+
+        // NOVA-RED-ACCOUNT-005: State gerçekten güncellenmeli (eski kod bu kısmı atlıyordu)
+        assert!(hb_state.grace_period_started_at.is_none(), "grace_period_started_at sıfırlanmalı");
+        assert!(hb_state.grace_period_ends_at.is_none(), "grace_period_ends_at sıfırlanmalı");
+    }
+
+    /// NOVA-RED-ACCOUNT-005: Grace period yokken duress heartbeat — inheritance_cancelled=false.
+    #[test]
+    fn test_duress_heartbeat_grace_period_yoksa_inheritance_cancelled_false() {
+        let mut state = make_account_state();
+        let mut hb_state = make_heartbeat_state();
+        // grace period yok
+
+        let submit_slot = SlotId(test_slot().0 + HEARTBEAT_MIN_INTERVAL_SECS * 1000 / MS_PER_SLOT + 1);
+        let hb = make_heartbeat(submit_slot, true);
+
+        let result = HeartbeatProcessor::process_heartbeat(
+            &mut state, &mut hb_state, hb, 1_700_000_000,
+        ).unwrap();
+
+        assert!(!result.inheritance_cancelled, "grace period yokken inheritance_cancelled false olmalı");
+        assert!(result.is_duress);
+        assert!(result.guardian_alarm);
     }
 
     #[test]

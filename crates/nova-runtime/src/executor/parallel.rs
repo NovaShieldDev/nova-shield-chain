@@ -9,13 +9,14 @@
 //!    (DependencyGraph'ın kaçırdığı edge-case'lere karşı güvenlik ağı)
 
 use crate::executor::scheduler::{build_parallel_groups, derive_account_keys};
+use crate::governance::voting::ProposalStore;
 use crate::state::cache::AccountStateCache;
 use crate::state::locks::AccountLocks;
 use crate::tx::types::{Transaction, TransactionKind};
 use crate::tx::validation::TxValidator;
 use crate::errors::{RuntimeError, RuntimeResult};
 use crate::virtual_account::{STAKING_MODULE_ADDR, GOVERNANCE_MODULE_ADDR};
-use nova_primitives::Address;
+use nova_primitives::{Address, SlotId};
 use rayon::prelude::*;
 use std::sync::Arc;
 
@@ -35,11 +36,33 @@ pub struct ParallelExecutor {
     base_fee: u128,
     /// Runtime hesap kilitleri — statik scheduler'ın kaçırdığı çakışmalara karşı güvenlik ağı
     account_locks: Arc<AccountLocks>,
+    /// Governance öneri deposu — GovernanceVote TX'leri için (NOVA-RED-RUNTIME-001)
+    proposal_store: Option<Arc<ProposalStore>>,
 }
 
 impl ParallelExecutor {
     pub fn new(state: Arc<AccountStateCache>, base_fee: u128) -> Self {
-        Self { state, base_fee, account_locks: Arc::new(AccountLocks::new()) }
+        Self {
+            state,
+            base_fee,
+            account_locks: Arc::new(AccountLocks::new()),
+            proposal_store: None,
+        }
+    }
+
+    /// Governance ProposalStore ile executor oluştur.
+    /// NOVA-RED-RUNTIME-001: GovernanceVote TX'lerini gerçekten kaydetmek için.
+    pub fn new_with_governance(
+        state: Arc<AccountStateCache>,
+        base_fee: u128,
+        proposal_store: Arc<ProposalStore>,
+    ) -> Self {
+        Self {
+            state,
+            base_fee,
+            account_locks: Arc::new(AccountLocks::new()),
+            proposal_store: Some(proposal_store),
+        }
     }
 
     /// AccountLocks ile executor oluştur (paylaşımlı kilit yönetimi için)
@@ -48,7 +71,7 @@ impl ParallelExecutor {
         base_fee: u128,
         account_locks: Arc<AccountLocks>,
     ) -> Self {
-        Self { state, base_fee, account_locks }
+        Self { state, base_fee, account_locks, proposal_store: None }
     }
 
     /// Aktif hesap kilidi sayısı (monitoring için)
@@ -157,9 +180,28 @@ impl ParallelExecutor {
                     (crate::tx::fee::STAKING_GAS_COST, Some("unstake failed: insufficient staked balance".to_string()))
                 }
             }
-            TransactionKind::GovernanceVote { .. } => {
-                // Oy kayıt edilir — token hareketi yok (governance modülü state'i ayrı)
-                (crate::tx::fee::GOVERNANCE_GAS_COST, None)
+            TransactionKind::GovernanceVote { proposal_id, option } => {
+                // NOVA-RED-RUNTIME-001: GovernanceVote TX'ini ProposalStore'a kaydet.
+                // Önceki sürümde oy sadece gas ücreti alıp hiç kaydedilmiyordu.
+                let err_msg = if let Some(store) = &self.proposal_store {
+                    // voting_power = sender bakiyesi (full staking entegrasyonu gelecek sürümde)
+                    let voting_power = self.state.balance(&tx.sender);
+                    match store.cast_vote(
+                        *proposal_id,
+                        tx.sender,
+                        option.clone(),
+                        voting_power,
+                        voting_power, // bonded_stake = balance (staking modülü entegrasyonu bekliyor)
+                        SlotId(0), // slot bilgisi executor'da yok — 0 placeholder
+                    ) {
+                        Ok(()) => None,
+                        Err(e) => Some(format!("governance vote failed: {e}")),
+                    }
+                } else {
+                    // ProposalStore yoksa sadece gas alınır (backward compat)
+                    None
+                };
+                (crate::tx::fee::GOVERNANCE_GAS_COST, err_msg)
             }
             TransactionKind::GovernancePropose { deposit, .. } => {
                 // Öneri depozitosu governance modülüne transfer edilir (Cosmos gov deposit)
@@ -417,5 +459,73 @@ mod tests {
         let executor = ParallelExecutor::new(Arc::clone(&state), 0);
         let results = executor.execute_block(&[tx]);
         assert!(!results[0].success, "sahte sender reddedilmeli");
+    }
+
+    /// NOVA-RED-RUNTIME-001: GovernanceVote TX'i ProposalStore'a kaydedilmeli.
+    /// Önceki sürümde sadece gas alınıp oy hiç kaydedilmiyordu.
+    #[test]
+    fn test_governance_vote_tx_recorded_in_proposal_store() {
+        use crate::governance::proposal::{Proposal, MIN_DEPOSIT_NSC};
+        use crate::governance::voting::ProposalStore;
+        use crate::tx::types::{compute_tx_hash, VoteOption};
+        use nova_crypto::signatures::ecdsa::{EcdsaKeypair, public_key_to_address};
+        use nova_primitives::crypto::Hash;
+
+        let mut seed = [0u8; 32];
+        seed[0] = 77;
+        let kp = EcdsaKeypair::from_secret_bytes(&seed).unwrap();
+        let pk = kp.public_key().unwrap();
+        let sender = public_key_to_address(&pk);
+
+        // Proposal oluştur: MIN_DEPOSIT_NSC ile → hemen VotingPeriod'a girer
+        let proposal_id = 0u64;
+        let proposal = Proposal::new(
+            proposal_id,
+            sender,
+            "Test Önerisi".to_string(),
+            "NOVA-RED-RUNTIME-001 regression".to_string(),
+            crate::tx::types::ProposalPayload::Text { content: "test".to_string() },
+            MIN_DEPOSIT_NSC,
+            0, // submitted_at_slot = 0 → voting_end_slot = VOTING_PERIOD_SLOTS (çok ileride)
+        );
+
+        let store = Arc::new(ProposalStore::new());
+        store.add_proposal(proposal);
+
+        // GovernanceVote TX'i oluştur
+        let mut tx = Transaction {
+            sender,
+            nonce: 0,
+            kind: TransactionKind::GovernanceVote {
+                proposal_id,
+                option: VoteOption::Yes,
+            },
+            max_fee_per_gas: 1_000_000_000,
+            max_priority_fee_per_gas: 100_000_000,
+            gas_limit: 100_000,
+            signature: Vec::new(),
+            slot: nova_primitives::SlotId(0),
+        };
+        let hash = Hash::from_bytes(compute_tx_hash(&tx));
+        tx.signature = kp.sign_hash(&hash).unwrap().as_bytes().to_vec();
+
+        let state = Arc::new(AccountStateCache::new());
+        state.set_balance(sender, 10_000 * NSC_DECIMALS);
+
+        // new_with_governance executor kullan
+        let executor = ParallelExecutor::new_with_governance(
+            Arc::clone(&state),
+            0,
+            Arc::clone(&store),
+        );
+        let results = executor.execute_block(&[tx]);
+
+        assert!(results[0].success, "governance vote TX başarılı olmalı: {:?}", results[0].error);
+
+        // NOVA-RED-RUNTIME-001: Oy ProposalStore'a kaydedilmiş olmalı
+        let votes = store.votes_for(proposal_id);
+        assert!(votes.contains_key(&sender), "sender'ın oyu ProposalStore'da bulunmalı");
+        let (option, _power) = &votes[&sender];
+        assert_eq!(*option, VoteOption::Yes, "oy seçeneği Yes olmalı");
     }
 }

@@ -445,7 +445,7 @@ mod integration_tests {
                 evidence: vec![i as u8],
                 reported_at_slot: SlotId(i * 100),
             };
-            GuardianManager::report_misconduct(&mut gs, report, SlotId(i * 100)).unwrap();
+            GuardianManager::report_misconduct(&mut gs, report, test_address(1), SlotId(i * 100)).unwrap();
         }
 
         let g0 = gs.guardians.get("g0").unwrap();
@@ -534,9 +534,35 @@ mod integration_tests {
 
         // 3 onay — hepsi çok kısa sürede (şüpheli)
         // Gerçek ECDSA imzaları kullan (NOVA-RED-ACCOUNT-001 düzeltmesi)
+        // NOVA-RED-0007: guardian_set ile kayıtlı guardian doğrulaması
+        use nova_crypto::EcdsaKeypair;
+        use nova_primitives::crypto::Hash;
+        use nova_primitives::types::Address as Addr;
+        use crate::types::{
+            GuardianCategory, GuardianPartyId, GuardianPreferences,
+            GuardianRecord, GuardianSet, GuardianStatus, ThresholdConfig,
+        };
+        let mut test_gs = GuardianSet::new(ThresholdConfig::DEFAULT, slot);
         for (i, id) in ["g0", "g1", "g2"].iter().enumerate() {
-            use nova_crypto::EcdsaKeypair;
-            use nova_primitives::crypto::Hash;
+            let kp = EcdsaKeypair::from_secret_bytes(&[i as u8 + 1; 32]).unwrap();
+            let pk_bytes = kp.public_key().unwrap().as_bytes().to_vec();
+            let record = GuardianRecord {
+                party_id: GuardianPartyId::new(*id, *id, &pk_bytes),
+                category: GuardianCategory::Personal {
+                    address: Addr::from_bytes([(i as u8 + 1); 20]),
+                },
+                signing_pubkey: pk_bytes,
+                status: GuardianStatus::Active,
+                registered_at_slot: slot,
+                last_active_slot: slot,
+                signatures_provided: 0,
+                missed_signing_requests: 0,
+                false_freeze_attempts: 0,
+                preferences: GuardianPreferences::default(),
+            };
+            test_gs.guardians.insert(id.to_string(), record);
+        }
+        for (i, id) in ["g0", "g1", "g2"].iter().enumerate() {
             let approval_slot = SlotId(slot.0 + i as u64);
             let kp = EcdsaKeypair::from_secret_bytes(&[i as u8 + 1; 32]).unwrap();
             let pk = kp.public_key().unwrap();
@@ -551,6 +577,7 @@ mod integration_tests {
                 *id,
                 sig.bytes.clone(),
                 pk.as_bytes(),
+                &test_gs, // NOVA-RED-0007
                 3, // threshold
                 approval_slot,
             );

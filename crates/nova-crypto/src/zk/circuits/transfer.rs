@@ -252,7 +252,8 @@ impl ConstraintSynthesizer<Fr> for TransferCircuit {
 ///
 /// Her tur 2 çarpma kullanır (t^2 + t^3), toplam 10 tur = 20 kısıt.
 /// Tur fonksiyonu: `state = (state + key + c_i)^3`
-fn mimc10_commitment_gadget(
+/// `pub(super)` — nullifier.rs tarafından paylaşımlı kullanılır.
+pub(super) fn mimc10_commitment_gadget(
     _cs: ConstraintSystemRef<Fr>,
     amount: &FpVar<Fr>,
     blinding: &FpVar<Fr>,

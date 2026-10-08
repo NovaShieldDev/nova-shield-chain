@@ -64,6 +64,25 @@ impl CheckpointManager {
             return Err(ConsensusError::InvalidCheckpoint);
         }
 
+        // NOVA-RED-CONSENSUS-004: QC temel doğrulaması.
+        // Boş signer listesi veya boş/yanlış boyut aggregate_signature → sahte checkpoint.
+        // Gerçek QC doğrulaması BftEngine::verify_qc ile yapılır (finalize_block sırasında).
+        // Burada en az yapısal bütünlük kontrol edilir.
+        if record.qc.signers.is_empty() {
+            return Err(ConsensusError::InvalidCheckpoint);
+        }
+        if record.qc.aggregate_signature.len() != 96 {
+            return Err(ConsensusError::InvalidCheckpoint);
+        }
+        // QC height ile checkpoint height eşleşmeli
+        if record.qc.height != height {
+            return Err(ConsensusError::InvalidCheckpoint);
+        }
+        // QC block hash ile checkpoint block hash eşleşmeli
+        if record.qc.block_hash != record.block_hash {
+            return Err(ConsensusError::InvalidCheckpoint);
+        }
+
         // Zaten var mı?
         if self.checkpoints.read().contains_key(&height) {
             return Err(ConsensusError::AlreadyFinalized { height });
@@ -161,11 +180,12 @@ mod tests {
     use nova_primitives::{BlockHash, EpochId, SlotId};
 
     fn make_qc(height: u64) -> QuorumCertificate {
+        use nova_primitives::ValidatorId;
         QuorumCertificate {
             block_hash: BlockHash::from_bytes([height as u8; 32]),
             height,
-            signers: vec![],
-            aggregate_signature: vec![0u8; 96],
+            signers: vec![ValidatorId(1), ValidatorId(2), ValidatorId(3)], // NOVA-RED-CONSENSUS-004: boş değil
+            aggregate_signature: vec![1u8; 96], // 96 byte geçerli boyut
             signed_at_slot: SlotId(height),
         }
     }
@@ -349,5 +369,51 @@ mod tests {
         assert_eq!(manager.next_checkpoint_height(ci - 1), ci);
         assert_eq!(manager.next_checkpoint_height(ci), ci * 2);
         assert_eq!(manager.next_checkpoint_height(ci + 1), ci * 2);
+    }
+
+    // ─── NOVA-RED-CONSENSUS-004 regression testleri ───────────────────────────
+
+    /// Boş signer listesi ile checkpoint kaydedilemez.
+    #[test]
+    fn test_checkpoint_empty_signers_rejected() {
+        let manager = CheckpointManager::new();
+        let h = CHECKPOINT_INTERVAL as u64;
+        let mut cp = make_checkpoint(h);
+        cp.qc.signers = vec![]; // boş signer
+        let err = manager.record_checkpoint(cp).unwrap_err();
+        assert!(matches!(err, ConsensusError::InvalidCheckpoint));
+    }
+
+    /// Yanlış boyutta aggregate_signature ile checkpoint kaydedilemez.
+    #[test]
+    fn test_checkpoint_wrong_sig_length_rejected() {
+        let manager = CheckpointManager::new();
+        let h = CHECKPOINT_INTERVAL as u64;
+        let mut cp = make_checkpoint(h);
+        cp.qc.aggregate_signature = vec![0u8; 32]; // yanlış boyut (96 bekleniyordu)
+        let err = manager.record_checkpoint(cp).unwrap_err();
+        assert!(matches!(err, ConsensusError::InvalidCheckpoint));
+    }
+
+    /// QC height uyuşmazlığı ile checkpoint kaydedilemez.
+    #[test]
+    fn test_checkpoint_qc_height_mismatch_rejected() {
+        let manager = CheckpointManager::new();
+        let h = CHECKPOINT_INTERVAL as u64;
+        let mut cp = make_checkpoint(h);
+        cp.qc.height = h + 1; // height uyuşmazlığı
+        let err = manager.record_checkpoint(cp).unwrap_err();
+        assert!(matches!(err, ConsensusError::InvalidCheckpoint));
+    }
+
+    /// QC block_hash uyuşmazlığı ile checkpoint kaydedilemez.
+    #[test]
+    fn test_checkpoint_qc_hash_mismatch_rejected() {
+        let manager = CheckpointManager::new();
+        let h = CHECKPOINT_INTERVAL as u64;
+        let mut cp = make_checkpoint(h);
+        cp.qc.block_hash = BlockHash::from_bytes([0xABu8; 32]); // farklı hash
+        let err = manager.record_checkpoint(cp).unwrap_err();
+        assert!(matches!(err, ConsensusError::InvalidCheckpoint));
     }
 }

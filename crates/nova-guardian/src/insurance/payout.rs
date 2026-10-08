@@ -93,12 +93,12 @@ mod tests {
     #[test]
     fn test_execute_payout_success() {
         let fund = InsuranceFund::new();
-        let store = ClaimStore::new();
+        let store = ClaimStore::new(addr(99));
         fund.deposit(500 * NSC).unwrap();
 
         let claim_id =
             store.submit_claim(addr(1), addr(2), ClaimReason::RecoveryRefused, 100 * NSC, SlotId(0));
-        store.approve(claim_id, 100 * NSC, SlotId(10)).unwrap();
+        store.approve(addr(99), claim_id, 100 * NSC, SlotId(10)).unwrap();
 
         let payout_mgr = InsurancePayout::new(&fund, &store);
         let record = payout_mgr.execute_payout(claim_id, SlotId(20)).unwrap();
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_payout_pending_claim_fails() {
         let fund = InsuranceFund::new();
-        let store = ClaimStore::new();
+        let store = ClaimStore::new(addr(99));
         fund.deposit(500 * NSC).unwrap();
 
         let claim_id =
@@ -131,12 +131,12 @@ mod tests {
     #[test]
     fn test_payout_insufficient_fund() {
         let fund = InsuranceFund::new();
-        let store = ClaimStore::new();
+        let store = ClaimStore::new(addr(99));
         fund.deposit(10 * NSC).unwrap();
 
         let claim_id =
             store.submit_claim(addr(1), addr(2), ClaimReason::RecoveryRefused, 100 * NSC, SlotId(0));
-        store.approve(claim_id, 100 * NSC, SlotId(10)).unwrap();
+        store.approve(addr(99), claim_id, 100 * NSC, SlotId(10)).unwrap();
 
         let payout_mgr = InsurancePayout::new(&fund, &store);
         assert!(matches!(
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn test_execute_all_approved_pays_all() {
         let fund = InsuranceFund::new();
-        let store = ClaimStore::new();
+        let store = ClaimStore::new(addr(99));
         fund.deposit(1000 * NSC).unwrap();
 
         let id1 = store.submit_claim(addr(1), addr(10), ClaimReason::RecoveryRefused, 100 * NSC, SlotId(0));
@@ -156,8 +156,8 @@ mod tests {
         let _id3 = store.submit_claim(addr(3), addr(10), ClaimReason::GuardianUnresponsive, 50 * NSC, SlotId(0));
 
         // id1 ve id2 onaylandı, id3 hâlâ pending
-        store.approve(id1, 100 * NSC, SlotId(5)).unwrap();
-        store.approve(id2, 200 * NSC, SlotId(5)).unwrap();
+        store.approve(addr(99), id1, 100 * NSC, SlotId(5)).unwrap();
+        store.approve(addr(99), id2, 200 * NSC, SlotId(5)).unwrap();
 
         let payout_mgr = InsurancePayout::new(&fund, &store);
         let results = payout_mgr.execute_all_approved(SlotId(10));
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_execute_all_approved_empty_when_none() {
         let fund = InsuranceFund::new();
-        let store = ClaimStore::new();
+        let store = ClaimStore::new(addr(99));
         fund.deposit(500 * NSC).unwrap();
 
         // Sadece pending talepler var
@@ -188,12 +188,12 @@ mod tests {
     #[test]
     fn test_double_payout_rejected() {
         let fund = InsuranceFund::new();
-        let store = ClaimStore::new();
+        let store = ClaimStore::new(addr(99));
         fund.deposit(500 * NSC).unwrap();
 
         let claim_id =
             store.submit_claim(addr(1), addr(2), ClaimReason::RecoveryRefused, 100 * NSC, SlotId(0));
-        store.approve(claim_id, 100 * NSC, SlotId(10)).unwrap();
+        store.approve(addr(99), claim_id, 100 * NSC, SlotId(10)).unwrap();
 
         let payout_mgr = InsurancePayout::new(&fund, &store);
         payout_mgr.execute_payout(claim_id, SlotId(20)).unwrap();

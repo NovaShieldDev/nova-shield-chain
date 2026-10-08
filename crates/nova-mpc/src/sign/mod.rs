@@ -220,6 +220,16 @@ impl SigningSession {
             &self.signers,
         )?;
 
+        // NOVA-RED-MPC-002: Aggregasyon sonrası imzayı doğrula.
+        // Sahte s_i değerleri göndererek geçersiz imza üretilebilir.
+        // `verify_threshold_signature` false dönerse → hata fırlat.
+        let valid = verify_threshold_signature(&signature, public_key, &self.message_hash)?;
+        if !valid {
+            return Err(crate::errors::MpcError::SignatureVerificationFailed {
+                reason: "aggregasyon sonrası imza doğrulaması başarısız — geçersiz partial imza".into(),
+            });
+        }
+
         Ok(SignOutput {
             signature,
             message_hash: self.message_hash,

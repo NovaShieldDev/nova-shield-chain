@@ -11,7 +11,7 @@ license.workspace    = true
 nova-primitives  = { workspace = true }
 nova-mempool     = { workspace = true }
 nova-auction     = { workspace = true }
-nova-consensus   = { workspace = true }
+nova-consensus   = { workspace = true, features = ["test-utils"] }
 nova-runtime     = { workspace = true }
 nova-vm          = { workspace = true }
 nova-network     = { workspace = true }

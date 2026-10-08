@@ -79,14 +79,24 @@ impl TriggerEvaluator {
             return Err(FreezeError::NoAuthorizedGuardians);
         }
 
-        // 2. Her imzalayanın yetkili olup olmadığını kontrol et
+        // 2. NOVA-RED-FREEZE-006: Tekrarlı imzacı kontrolü — dedup önce, threshold sonra
+        {
+            let mut sorted = signers.clone();
+            sorted.sort();
+            sorted.dedup();
+            if sorted.len() != signers.len() {
+                return Err(FreezeError::DuplicateGuardianSigner);
+            }
+        }
+
+        // 3. Her imzalayanın yetkili olup olmadığını kontrol et
         for signer in &signers {
             if !authorized.is_authorized(signer) {
                 return Err(FreezeError::GuardianNotAuthorized);
             }
         }
 
-        // 3. Threshold karşılandı mı?
+        // 4. Threshold karşılandı mı?
         let signer_count = signers.len() as u8;
         if signer_count < authorized.required_threshold {
             return Err(FreezeError::ThresholdNotMet {
@@ -95,7 +105,7 @@ impl TriggerEvaluator {
             });
         }
 
-        // 4. Jailed signer var mı? (expensive check — son)
+        // 5. Jailed signer var mı? (expensive check — son)
         for signer in &signers {
             if jailed_check(signer) {
                 return Err(FreezeError::GuardianJailed {
@@ -109,9 +119,10 @@ impl TriggerEvaluator {
             freeze_id,
             account,
             reason: FreezeReason::GuardianThreshold {
-                signers,
+                signers: signers.clone(),
             },
-            initiator: authorized.authorized[0],
+            // NOVA-RED-FREEZE-004: initiator = ilk gerçek imzacı (authorized[0] değil)
+            initiator: signers[0],
             initiated_at_slot: current_slot,
             initiated_at_timestamp: timestamp_secs,
         })
@@ -305,6 +316,63 @@ mod tests {
         ).unwrap_err();
 
         assert!(matches!(err, FreezeError::GuardianJailed { .. }));
+    }
+
+    /// NOVA-RED-FREEZE-004: initiator = ilk gerçek imzacı, authorized[0] değil
+    #[test]
+    fn test_guardian_initiator_is_first_signer_not_authorized_zero() {
+        let account = addr(1);
+        let g1 = addr(10);
+        let g2 = addr(11);
+        let g3 = addr(12); // authorized[0] ama signer değil
+
+        let authorized = make_authorized(account, vec![g3, g1, g2], 2);
+        let signers = vec![g1, g2]; // g3 authorized[0] ama imzalamadı
+        let no_jail = |_: &Address| false;
+
+        let record = TriggerEvaluator::evaluate_guardian_threshold(
+            account, signers, &authorized, no_jail, SlotId(500), 50_000,
+        ).expect("başarılı olmalı");
+
+        // initiator authorized[0]=g3 değil, signers[0]=g1 olmalı
+        assert_eq!(record.initiator, g1, "initiator ilk gerçek imzacı olmalı");
+    }
+
+    /// NOVA-RED-FREEZE-006: tekrarlı imzacı threshold bypass'ı engellenmeli
+    #[test]
+    fn test_duplicate_signer_rejected() {
+        let account = addr(1);
+        let g1 = addr(10);
+        let g2 = addr(11);
+
+        let authorized = make_authorized(account, vec![g1, g2], 2);
+        // g1 iki kez gönderildi — threshold bypass denemesi
+        let signers = vec![g1, g1];
+        let no_jail = |_: &Address| false;
+
+        let err = TriggerEvaluator::evaluate_guardian_threshold(
+            account, signers, &authorized, no_jail, SlotId(500), 50_000,
+        ).unwrap_err();
+
+        assert!(matches!(err, FreezeError::DuplicateGuardianSigner),
+            "tekrarlı imzacı reddedilmeli, aldık: {:?}", err);
+    }
+
+    /// NOVA-RED-FREEZE-006: 3 farklı imzacı → geçerli
+    #[test]
+    fn test_no_duplicate_signers_passes() {
+        let account = addr(1);
+        let g1 = addr(10);
+        let g2 = addr(11);
+        let g3 = addr(12);
+
+        let authorized = make_authorized(account, vec![g1, g2, g3], 2);
+        let signers = vec![g1, g2]; // farklı, threshold = 2 → geçerli
+        let no_jail = |_: &Address| false;
+
+        assert!(TriggerEvaluator::evaluate_guardian_threshold(
+            account, signers, &authorized, no_jail, SlotId(500), 50_000,
+        ).is_ok());
     }
 
     #[test]

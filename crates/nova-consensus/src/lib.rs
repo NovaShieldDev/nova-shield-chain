@@ -293,8 +293,8 @@ mod tests {
             qc: QuorumCertificate {
                 block_hash: BlockHash::from_bytes([ci as u8; 32]),
                 height: ci,
-                signers: vec![],
-                aggregate_signature: vec![0u8; 96],
+                signers: vec![ValidatorId(1), ValidatorId(2), ValidatorId(3)], // NOVA-RED-CONSENSUS-004
+                aggregate_signature: vec![1u8; 96], // geçerli boyut
                 signed_at_slot: SlotId(ci),
             },
             created_at_slot: SlotId(ci),

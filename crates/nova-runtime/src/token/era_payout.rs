@@ -34,6 +34,9 @@ pub const FALLOFF_RATE_BPS: u64 = 200; // %2 per %1 over ideal
 /// Maksimum komisyon oranı (%50)
 pub const MAX_COMMISSION_BPS: u32 = 5_000;
 
+/// Maksimum uptime bonus oranı (%20) — NOVA-RED-RUNTIME-008: taşmayı önler
+pub const MAX_UPTIME_BONUS_BPS: u64 = 2_000;
+
 /// Minimum komisyon oranı (%0 — izin verilir)
 pub const MIN_COMMISSION_BPS: u32 = 0;
 
@@ -132,7 +135,14 @@ impl EraPayoutEngine {
             let base_share = effective_reward * stake / total_stake;
 
             // Uptime bonusu uygula
-            let uptime_bonus_bps = input.validator_uptime_bonuses.get(vid).copied().unwrap_or(0);
+            // NOVA-RED-RUNTIME-008: uptime_bonus_bps MAX_UPTIME_BONUS_BPS ile sınırlandırılır —
+            // sınırsız değer u128 taşmasına neden olur (base_share * u64::MAX → overflow).
+            let uptime_bonus_bps = input
+                .validator_uptime_bonuses
+                .get(vid)
+                .copied()
+                .unwrap_or(0)
+                .min(MAX_UPTIME_BONUS_BPS);
             let uptime_bonus = base_share * uptime_bonus_bps as u128 / 10_000;
             let with_uptime = base_share.saturating_add(uptime_bonus);
 
@@ -385,6 +395,51 @@ mod tests {
         let result = EraPayoutEngine::calculate(&input);
         // %10 staked → reward_factor < 10000 → treasury_reward > 0
         assert!(result.treasury_reward > 0 || result.total_era_reward == 0);
+    }
+
+    /// NOVA-RED-RUNTIME-008: aşırı büyük uptime_bonus_bps taşmaya neden olmamalı
+    #[test]
+    fn test_uptime_bonus_overflow_capped() {
+        let mut input = make_input(
+            NSC_TOTAL_SUPPLY / 2,
+            NSC_TOTAL_SUPPLY,
+            &[(1, 1_000)],
+            &[(1, 0)],
+        );
+        // u64::MAX bonus → MAX_UPTIME_BONUS_BPS ile kesilmeli, panik/overflow olmamalı
+        input.validator_uptime_bonuses.insert(vid(1), u64::MAX);
+
+        let result = EraPayoutEngine::calculate(&input);
+        let r = result.validator_rewards.get(&vid(1)).unwrap();
+
+        // Bonus maksimum %20 olmalı
+        let base_without_bonus = r.total - r.uptime_bonus;
+        let max_allowed_bonus = base_without_bonus * MAX_UPTIME_BONUS_BPS as u128 / 10_000;
+        assert!(
+            r.uptime_bonus <= max_allowed_bonus + 1,
+            "uptime bonus MAX_UPTIME_BONUS_BPS ile sınırlı olmalı, got: {}",
+            r.uptime_bonus
+        );
+    }
+
+    /// NOVA-RED-RUNTIME-008: MAX_UPTIME_BONUS_BPS = 2000 (% 20) üstü kesilmeli
+    #[test]
+    fn test_uptime_bonus_exceeding_max_is_capped() {
+        let mut input = make_input(
+            NSC_TOTAL_SUPPLY / 2,
+            NSC_TOTAL_SUPPLY,
+            &[(1, 1_000), (2, 1_000)],
+            &[(1, 0), (2, 0)],
+        );
+        input.validator_uptime_bonuses.insert(vid(1), 9_000); // %90 → %20'ye kesilmeli
+        input.validator_uptime_bonuses.insert(vid(2), 2_000); // zaten %20
+
+        let result = EraPayoutEngine::calculate(&input);
+        let r1 = result.validator_rewards.get(&vid(1)).unwrap();
+        let r2 = result.validator_rewards.get(&vid(2)).unwrap();
+
+        // Her iki validator aynı bonus (her ikisi de %20 ile sınırlı)
+        assert_eq!(r1.total, r2.total, "her iki validator eşit bonus almalı (%20 cap)");
     }
 
     // 12. Max komisyon sınırı

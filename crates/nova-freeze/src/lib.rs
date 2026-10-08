@@ -120,9 +120,10 @@ mod integration_tests {
         let engine = FreezeEngine::with_defaults();
         engine.set_authorized_guardians(
             account,
+            account, // initiator == account (sahip kendi listesini ayarlıyor)
             FreezeAuthorizedGuardians::new(account, guardians, threshold),
             SlotId(0),
-        );
+        ).unwrap();
         engine
     }
 
@@ -427,9 +428,9 @@ mod integration_tests {
                 .unfreeze(account, proof, None, SlotId(slot_base.0 + 10))
                 .unwrap();
 
-            // Yanlış freeze bildir
+            // Yanlış freeze bildir — reporter = hesap sahibi (yetkili)
             let events = engine
-                .report_wrong_freeze(fid, addr(99), SlotId(slot_base.0 + 20))
+                .report_wrong_freeze(fid, account, SlotId(slot_base.0 + 20))
                 .unwrap();
 
             let has_slash = events
@@ -469,9 +470,10 @@ mod integration_tests {
         // a1 unfreeze
         engine.set_authorized_guardians(
             a1,
+            a1, // initiator == account
             FreezeAuthorizedGuardians::new(a1, vec![a1], 1),
             SlotId(0),
-        );
+        ).unwrap();
         let fid1 = get_freeze_id(&engine, &a1);
         let proof = make_proof(&a1, &fid1, vec![a1], SlotId(100));
         engine.unfreeze(a1, proof, None, SlotId(100)).unwrap();
@@ -630,9 +632,10 @@ mod integration_tests {
 
         engine.set_authorized_guardians(
             account,
+            account, // initiator == account
             FreezeAuthorizedGuardians::new(account, vec![addr(160), addr(161)], 2),
             SlotId(0),
-        );
+        ).unwrap();
         let err2 = engine
             .freeze_guardian(account, vec![addr(160), addr(161)], SlotId(1), 400)
             .unwrap_err();
@@ -767,9 +770,10 @@ mod integration_tests {
         let freeze_id = get_freeze_id(&engine, &account);
         engine.set_authorized_guardians(
             account,
+            account, // initiator == account
             FreezeAuthorizedGuardians::new(account, vec![addr(220)], 1),
             SlotId(0),
-        );
+        ).unwrap();
         let proof = make_proof(&account, &freeze_id, vec![addr(220)], SlotId(100));
         engine.unfreeze(account, proof, None, SlotId(100)).unwrap();
 
@@ -880,7 +884,7 @@ mod integration_tests {
                 .unfreeze(account, proof, None, SlotId(base.0 + 10))
                 .unwrap();
             engine
-                .report_wrong_freeze(fid, addr(99), SlotId(base.0 + 20))
+                .report_wrong_freeze(fid, account, SlotId(base.0 + 20))
                 .unwrap();
         }
 
@@ -914,9 +918,9 @@ mod integration_tests {
             .unfreeze(account, proof, None, SlotId(100))
             .unwrap();
 
-        // Yanlış freeze bildir
+        // Yanlış freeze bildir — reporter = hesap sahibi (yetkili)
         engine
-            .report_wrong_freeze(freeze_id, addr(99), SlotId(200))
+            .report_wrong_freeze(freeze_id, account, SlotId(200))
             .unwrap();
 
         // Audit log'da was_wrong_freeze işaretlenmeli

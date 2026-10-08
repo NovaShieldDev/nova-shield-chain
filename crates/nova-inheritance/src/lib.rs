@@ -64,7 +64,16 @@ pub use trigger::{TriggerEvaluation, TriggerEvaluator};
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use nova_crypto::EcdsaKeypair;
     use nova_primitives::types::{Address, SlotId};
+
+    fn test_keypair() -> EcdsaKeypair {
+        EcdsaKeypair::from_secret_bytes(&[0xA5u8; 32]).expect("test keypair")
+    }
+
+    fn test_pubkey() -> Vec<u8> {
+        test_keypair().public_key().expect("pubkey").as_bytes().to_vec()
+    }
 
     fn addr(seed: u8) -> Address {
         Address::from_bytes([seed; 20])
@@ -85,9 +94,11 @@ mod integration_tests {
         let plan_id = engine.create_plan(plan).unwrap();
 
         // Birkaç slot heartbeat gönder
+        let kp = test_keypair();
+        let pk = test_pubkey();
         for slot in [100u64, 200, 300] {
-            let msg = HeartbeatBuilder::new(1, plan_id, SlotId(slot)).build_unsigned();
-            engine.process_heartbeat(msg).unwrap();
+            let msg = HeartbeatBuilder::new(1, plan_id, SlotId(slot)).build_signed(&kp);
+            engine.process_heartbeat(msg, &pk).unwrap();
         }
 
         let state = engine.get_state(plan_id).unwrap();
@@ -255,11 +266,13 @@ mod integration_tests {
 
         let plan_id = engine.create_plan(plan).unwrap();
 
-        // Duress heartbeat gönder
+        // Duress heartbeat gönder (NOVA-RED-INHERITANCE-003: gerçek imza zorunlu)
+        let kp = test_keypair();
+        let pk = test_pubkey();
         let msg = HeartbeatBuilder::new(1, plan_id, SlotId(500))
             .with_duress()
-            .build_unsigned();
-        engine.process_heartbeat(msg).unwrap();
+            .build_signed(&kp);
+        engine.process_heartbeat(msg, &pk).unwrap();
 
         let state = engine.get_state(plan_id).unwrap();
         assert!(state.duress_detected, "duress flag set olmalı");

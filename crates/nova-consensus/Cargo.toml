@@ -7,6 +7,11 @@ rust-version.workspace = true
 authors.workspace    = true
 license.workspace    = true
 
+[features]
+# Test ortamlarında mock BFT path'ini etkinleştirir (integration test crate'leri için).
+# NOVA-RED-CONSENSUS-003: Production'da bu özellik etkin olmamalı.
+test-utils = []
+
 [dependencies]
 nova-primitives = { workspace = true }
 nova-crypto     = { workspace = true }

@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn integration_insurance_fund_claim_payout() {
         let fund = InsuranceFund::new();
-        let claim_store = ClaimStore::new();
+        let claim_store = ClaimStore::new(addr(99));
 
         // Kurumsal guardian fona katkı yapar
         fund.deposit(500 * NSC).unwrap();
@@ -253,7 +253,7 @@ mod tests {
         );
 
         // Talep onaylanır
-        claim_store.approve(claim_id, 100 * NSC, SlotId(1100)).unwrap();
+        claim_store.approve(addr(99), claim_id, 100 * NSC, SlotId(1100)).unwrap();
 
         // Tazminat ödenir
         let payout_mgr = InsurancePayout::new(&fund, &claim_store);
@@ -348,8 +348,9 @@ mod tests {
         assert!(matches!(g.status, GuardianStatus::PendingVerification));
         registry.register(g).unwrap();
 
-        // KYC onayı (statik metod)
-        KycVerifier::approve(&registry, &addr(1)).unwrap();
+        // KYC onayı — NOVA-RED-GUARDIAN-001: yetkili operatör gerekli
+        let kyc = KycVerifier::new(addr(99));
+        kyc.approve(&registry, addr(99), &addr(1)).unwrap();
         let updated = registry.get(&addr(1)).unwrap();
         assert_eq!(updated.kyc_status, KycStatus::Verified);
         assert!(updated.status.is_active());

@@ -46,6 +46,9 @@ pub enum GuardianError {
 
     #[error("geçersiz parametre: {0}")]
     InvalidParameter(String),
+
+    #[error("yetkisiz erişim: bu işlem için yetki yok")]
+    Unauthorized,
 }
 
 pub type GuardianResult<T> = Result<T, GuardianError>;

@@ -18,6 +18,7 @@
 use blake3;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
@@ -62,15 +63,41 @@ const MAX_KZG_DEG: usize = 128;
 /// BLS12-381 Fr'ye güvenle sığan chunk boyutu (Fr < 2^255, 31B ≤ 248 bit)
 const FR_CHUNK_BYTES: usize = 31;
 
+// ─── Mainnet Guard ────────────────────────────────────────────────────────────
+
+/// NOVA-RED-RUNTIME-010: mainnet modunda dev_srs() kullanımı engellenir.
+/// Node başlangıcında `set_mainnet_mode(true)` çağrılır.
+static MAINNET_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Mainnet modunu ayarla — node başlangıcında çağrılır.
+/// Mainnet modunda dev_srs() çağrıldığında panic üretir.
+pub fn set_mainnet_mode(is_mainnet: bool) {
+    MAINNET_MODE.store(is_mainnet, AtomicOrdering::SeqCst);
+}
+
+/// Mainnet modunda mı?
+pub fn is_mainnet_mode() -> bool {
+    MAINNET_MODE.load(AtomicOrdering::SeqCst)
+}
+
 // ─── Dev SRS (Structured Reference String) ───────────────────────────────────
 
 /// Geliştirme SRS: `SRS[i] = τ^i * G1` (deterministic τ)
 ///
 /// Mainnet için: gerçek trusted setup seremonisinden (EIP-4844 KZG ceremony)
 /// yüklenmesi gerekir. Bu SRS yalnızca geliştirme/test ortamı içindir.
+///
+/// NOVA-RED-RUNTIME-010: mainnet modunda çağrıldığında panic üretir.
 static DEV_SRS: OnceLock<Vec<G1Affine>> = OnceLock::new();
 
 fn dev_srs() -> &'static [G1Affine] {
+    // NOVA-RED-RUNTIME-010: Mainnet guard — dev SRS mainnet'te kullanılamaz
+    assert!(
+        !MAINNET_MODE.load(AtomicOrdering::SeqCst),
+        "dev_srs() mainnet modunda çağrılamaz! \
+         Gerçek KZG trusted setup SRS yüklenmelidir. \
+         Bkz: nova-node/src/srs.rs"
+    );
     DEV_SRS.get_or_init(|| {
         // τ = BLAKE3("nova-blob-kzg-dev-tau") mod Fr
         // NOT: Bu "toxic waste" içerir — mainnet'te kullanılmamalı
@@ -687,5 +714,24 @@ mod tests {
         // Sıfır katsayı → identity point (compressed: 0xC0...)
         let _vh = c.versioned_hash();
         assert_eq!(c.commitment[0] & 0x80, 0x80, "Geçerli compressed G1 flag");
+    }
+
+    /// NOVA-RED-RUNTIME-010: mainnet modunda dev_srs() paniklemeli
+    #[test]
+    fn test_dev_srs_panics_in_mainnet_mode() {
+        set_mainnet_mode(true);
+        let result = std::panic::catch_unwind(|| {
+            BlobCommitment::commit(b"test");
+        });
+        set_mainnet_mode(false); // diğer testler etkilenmesin
+        assert!(result.is_err(), "mainnet modunda dev_srs() paniklemeli");
+    }
+
+    /// NOVA-RED-RUNTIME-010: dev modunda (varsayılan) normal çalışmalı
+    #[test]
+    fn test_dev_srs_works_in_dev_mode() {
+        set_mainnet_mode(false);
+        let c = BlobCommitment::commit(b"dev mode test");
+        assert_ne!(c.commitment, [0u8; 48], "geçerli commitment üretilmeli");
     }
 }

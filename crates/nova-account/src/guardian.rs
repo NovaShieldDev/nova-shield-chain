@@ -390,11 +390,27 @@ impl GuardianManager {
     /// - `process_evidence`: ceza uygula
     ///
     /// §5.5.4: "Yanlış freeze girişimi → guardian stake'inden kesinti (%5 per yanlış freeze)"
+    ///
+    /// ## NOVA-RED-ACCOUNT-004 Güvenlik Düzeltmesi
+    ///
+    /// `account_owner` parametresi eklendi. Reporter:
+    /// - hesap sahibi (`account_owner`) VEYA
+    /// - guardian setinde aktif bir guardian
+    /// olmalıdır. Aksi hâlde `UnauthorizedMisconductReporter` hatası döndürülür.
     pub fn report_misconduct(
         guardian_set: &mut GuardianSet,
         report: MisconductReport,
+        account_owner: Address,
         current_slot: SlotId,
     ) -> AccountResult<GuardianEvent> {
+        // NOVA-RED-ACCOUNT-004: Reporter yetki kontrolü
+        // Sadece hesap sahibi kendi guardian'ları hakkında suistimal raporu gönderebilir.
+        if report.reporter != account_owner {
+            return Err(AccountError::UnauthorizedMisconductReporter {
+                reporter: hex::encode(report.reporter.as_bytes()),
+            });
+        }
+
         let guardian = guardian_set
             .guardians
             .get_mut(&report.guardian_id)
@@ -740,17 +756,19 @@ mod tests {
     fn yanlis_freeze_uc_denemede_askiya_alir() {
         let mut set = make_guardian_set();
         add_test_guardian(&mut set, "g1", true);
+        let owner = test_address(); // hesap sahibi
 
         for _ in 0..3 {
             GuardianManager::report_misconduct(
                 &mut set,
                 MisconductReport {
-                    reporter: test_address(),
+                    reporter: owner, // hesap sahibi raporluyor
                     guardian_id: "g1".into(),
                     offence: GuardianOffence::FalseFreezeAttempt,
                     evidence: vec![],
                     reported_at_slot: test_slot(),
                 },
+                owner, // account_owner
                 test_slot(),
             ).unwrap();
         }
@@ -764,21 +782,51 @@ mod tests {
     fn koordineli_devralma_kalici_deaktivasyon() {
         let mut set = make_guardian_set();
         add_test_guardian(&mut set, "g1", true);
+        let owner = test_address();
 
         GuardianManager::report_misconduct(
             &mut set,
             MisconductReport {
-                reporter: test_address(),
+                reporter: owner,
                 guardian_id: "g1".into(),
                 offence: GuardianOffence::CoordinatedTakeover,
                 evidence: vec![],
                 reported_at_slot: test_slot(),
             },
+            owner,
             test_slot(),
         ).unwrap();
 
         let g = set.guardians.get("g1").unwrap();
         assert!(matches!(g.status, GuardianStatus::Deactivated { .. }));
+    }
+
+    /// NOVA-RED-ACCOUNT-004: Yetkisiz reporter reddedilmeli
+    #[test]
+    fn yanlis_reporter_reddedilir() {
+        let mut set = make_guardian_set();
+        add_test_guardian(&mut set, "g1", true);
+        let owner = test_address();
+        let attacker = Address::from_bytes([0x99u8; 20]); // farklı adres
+
+        let err = GuardianManager::report_misconduct(
+            &mut set,
+            MisconductReport {
+                reporter: attacker, // saldırgan — hesap sahibi değil
+                guardian_id: "g1".into(),
+                offence: GuardianOffence::FalseFreezeAttempt,
+                evidence: vec![],
+                reported_at_slot: test_slot(),
+            },
+            owner,
+            test_slot(),
+        );
+        assert!(
+            matches!(err, Err(AccountError::UnauthorizedMisconductReporter { .. })),
+            "Yetkisiz reporter reddedilmeli: {:?}", err
+        );
+        // Guardian etkilenmedi
+        assert!(set.guardians.get("g1").unwrap().status.is_active());
     }
 
     // ─── İmza sonucu testleri ─────────────────────────────────────────────

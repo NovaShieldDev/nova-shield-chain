@@ -69,13 +69,17 @@ impl AccountStateCache {
     }
 
     /// Bakiye aktar: from → to
+    ///
+    /// RUNTIME-001: Bakiye kontrolü ve düşümü tek atomik write kilidi içinde yapılır.
+    /// Eski kod: `balance()` okuma → ayrı `entry()` yazma arası TOCTOU race.
+    /// Yeni kod: `entry(*from)` write kilidi alınır, içinde kontrol + düşüm atomik.
     pub fn transfer(&self, from: &Address, to: &Address, amount: u128) -> bool {
-        let from_balance = self.balance(from);
-        if from_balance < amount {
-            return false;
-        }
+        // Atomik: bakiye yeterli mi kontrolü ve düşümü aynı shard kilidi altında
         {
             let mut from_entry = self.inner.entry(*from).or_default();
+            if from_entry.balance < amount {
+                return false;
+            }
             from_entry.balance -= amount;
         }
         {

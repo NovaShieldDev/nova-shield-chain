@@ -235,7 +235,13 @@ impl HeirManager {
                 });
             }
 
-            *tier_totals.entry(heir.tier as u8).or_insert(0) += heir.share_bps;
+            // NOVA-RED-INHERITANCE-001: u32 wrapping overflow koruması.
+            // share_bps değerleri kasıtlı olarak 2^32 mod 10_000 = 0 yapabilir.
+            // checked_add ile overflow tespiti yapılır.
+            let entry = tier_totals.entry(heir.tier as u8).or_insert(0u32);
+            *entry = entry.checked_add(heir.share_bps).ok_or_else(|| {
+                InheritanceError::InvalidShareTotal { total_bps: u32::MAX }
+            })?;
         }
 
         for (tier, total) in &tier_totals {

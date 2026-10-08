@@ -33,6 +33,8 @@ use crate::errors::{InheritanceError, InheritanceResult};
 use crate::types::{
     HeartbeatKind, HeartbeatMsg, InheritancePlanId, SLOT_DURATION_MS,
 };
+use nova_crypto::{EcdsaVerifier};
+use nova_primitives::crypto::{Hash, PublicKey, Signature};
 use nova_primitives::types::{Hash32, SlotId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -94,13 +96,20 @@ impl HeartbeatTracker {
     ///
     /// Im-Online pallet `heartbeat()` extrinsic analog.
     ///
+    /// NOVA-RED-INHERITANCE-003: `owner_mpc_pubkey` parametresi eklendi.
+    /// Artık `mpc_signature` gerçek ECDSA ile doğrulanıyor — `is_empty()` yeterli değil.
+    ///
     /// İşlem adımları:
     /// 1. Hash doğrulaması
     /// 2. Duplicate kontrolü
-    /// 3. İmza doğrulaması (şimdilik: length check)
+    /// 3. ECDSA imza doğrulaması
     /// 4. Kayıt güncelleme
     /// 5. Duress flag kontrolü
-    pub fn process_heartbeat(&mut self, msg: &HeartbeatMsg) -> InheritanceResult<HeartbeatRecord> {
+    pub fn process_heartbeat(
+        &mut self,
+        msg: &HeartbeatMsg,
+        owner_mpc_pubkey: &[u8],
+    ) -> InheritanceResult<HeartbeatRecord> {
         let plan_key = msg.plan_id.0;
 
         // 1. Hash doğrulaması
@@ -127,12 +136,18 @@ impl HeartbeatTracker {
             }
         }
 
-        // 3. İmza doğrulaması (gerçek implementasyonda MPC threshold imza doğrulanır)
-        //    Şimdilik: imza boş değil mi kontrol et
-        if msg.mpc_signature.is_empty()
-            && !matches!(msg.kind, HeartbeatKind::GuardianExtension { .. })
-        {
+        // 3. ECDSA imza doğrulaması (NOVA-RED-INHERITANCE-003)
+        // GuardianExtension tipi için de imza zorunludur.
+        if msg.mpc_signature.is_empty() {
             return Err(InheritanceError::InvalidHeartbeatSignature);
+        }
+        {
+            let pk = PublicKey::from_slice(owner_mpc_pubkey)
+                .ok_or(InheritanceError::InvalidHeartbeatSignature)?;
+            let hash = Hash::from_bytes(*msg.heartbeat_hash.as_bytes());
+            let sig = Signature::new_ecdsa(msg.mpc_signature.clone());
+            EcdsaVerifier::verify(&hash, &sig, &pk)
+                .map_err(|_| InheritanceError::InvalidHeartbeatSignature)?;
         }
 
         // 4. Kayıt güncelleme
@@ -240,7 +255,9 @@ impl HeartbeatBuilder {
         self
     }
 
-    /// Heartbeat mesajı oluştur (gerçek imza olmadan — test için).
+    /// Heartbeat mesajı oluştur (gerçek imza olmadan — SADECE test helper'ları için).
+    /// Production kodunda `build_signed` kullanılmalıdır.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn build_unsigned(self) -> HeartbeatMsg {
         let kind_byte = match self.kind {
             HeartbeatKind::Normal => 0u8,
@@ -258,7 +275,38 @@ impl HeartbeatBuilder {
             plan_id: self.plan_id,
             slot: self.slot,
             kind: self.kind,
-            mpc_signature: vec![0xDEu8; 64], // Test imzası
+            mpc_signature: vec![0xDEu8; 64], // Test imzası — production'da geçersiz
+            heartbeat_hash: hash,
+        }
+    }
+
+    /// Heartbeat mesajı oluştur — gerçek ECDSA imzasıyla.
+    ///
+    /// NOVA-RED-INHERITANCE-003: Production kodu bu metodu kullanır.
+    /// `keypair`: hesap sahibinin secp256k1 keypair'i.
+    pub fn build_signed(self, keypair: &nova_crypto::EcdsaKeypair) -> HeartbeatMsg {
+        let kind_byte = match self.kind {
+            HeartbeatKind::Normal => 0u8,
+            HeartbeatKind::Duress => 1u8,
+            HeartbeatKind::GuardianExtension { .. } => 2u8,
+        };
+        let hash = HeartbeatMsg::compute_hash(
+            self.account_id,
+            &self.plan_id,
+            self.slot,
+            kind_byte,
+        );
+        let sig_hash = nova_primitives::crypto::Hash::from_bytes(*hash.as_bytes());
+        let signature = keypair.sign_hash(&sig_hash)
+            .expect("heartbeat imzalama başarısız")
+            .as_bytes()
+            .to_vec();
+        HeartbeatMsg {
+            account_id: self.account_id,
+            plan_id: self.plan_id,
+            slot: self.slot,
+            kind: self.kind,
+            mpc_signature: signature,
             heartbeat_hash: hash,
         }
     }
@@ -270,6 +318,15 @@ impl HeartbeatBuilder {
 mod tests {
     use super::*;
     use crate::types::{HeartbeatKind, InheritancePlanId};
+    use nova_crypto::EcdsaKeypair;
+
+    fn test_keypair() -> EcdsaKeypair {
+        EcdsaKeypair::from_secret_bytes(&[0xA5u8; 32]).expect("test keypair")
+    }
+
+    fn test_pubkey() -> Vec<u8> {
+        test_keypair().public_key().expect("pubkey").as_bytes().to_vec()
+    }
 
     fn make_plan_id(seed: u8) -> InheritancePlanId {
         let mut bytes = [0u8; 32];
@@ -278,14 +335,15 @@ mod tests {
     }
 
     fn make_heartbeat(account_id: u64, plan_id: InheritancePlanId, slot: u64) -> HeartbeatMsg {
-        HeartbeatBuilder::new(account_id, plan_id, SlotId(slot))
-            .build_unsigned()
+        let kp = test_keypair();
+        HeartbeatBuilder::new(account_id, plan_id, SlotId(slot)).build_signed(&kp)
     }
 
     fn make_duress_heartbeat(account_id: u64, plan_id: InheritancePlanId, slot: u64) -> HeartbeatMsg {
+        let kp = test_keypair();
         HeartbeatBuilder::new(account_id, plan_id, SlotId(slot))
             .with_duress()
-            .build_unsigned()
+            .build_signed(&kp)
     }
 
     // Im-Online: heartbeat başarıyla işlenir
@@ -294,8 +352,9 @@ mod tests {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(1);
         let msg = make_heartbeat(42, plan_id, 100);
+        let pk = test_pubkey();
 
-        let result = tracker.process_heartbeat(&msg);
+        let result = tracker.process_heartbeat(&msg, &pk);
         assert!(result.is_ok());
         assert_eq!(tracker.last_heartbeat_slot(&plan_id), Some(SlotId(100)));
         assert_eq!(tracker.heartbeat_count(&plan_id), 1);
@@ -306,13 +365,13 @@ mod tests {
     fn test_duplicate_heartbeat_rejected() {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(2);
+        let pk = test_pubkey();
 
         let msg = make_heartbeat(1, plan_id, 200);
-        tracker.process_heartbeat(&msg).unwrap();
+        tracker.process_heartbeat(&msg, &pk).unwrap();
 
-        // Aynı slot'a tekrar gönder
         let msg2 = make_heartbeat(1, plan_id, 200);
-        let err = tracker.process_heartbeat(&msg2).unwrap_err();
+        let err = tracker.process_heartbeat(&msg2, &pk).unwrap_err();
         assert!(matches!(err, InheritanceError::DuplicateHeartbeat { .. }));
         assert_eq!(tracker.duplicate_rejection_count(&plan_id), 1);
     }
@@ -322,12 +381,13 @@ mod tests {
     fn test_different_slot_heartbeat_ok() {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(3);
+        let pk = test_pubkey();
 
         let msg1 = make_heartbeat(1, plan_id, 100);
-        tracker.process_heartbeat(&msg1).unwrap();
+        tracker.process_heartbeat(&msg1, &pk).unwrap();
 
         let msg2 = make_heartbeat(1, plan_id, 101);
-        tracker.process_heartbeat(&msg2).unwrap();
+        tracker.process_heartbeat(&msg2, &pk).unwrap();
 
         assert_eq!(tracker.heartbeat_count(&plan_id), 2);
         assert_eq!(tracker.last_heartbeat_slot(&plan_id), Some(SlotId(101)));
@@ -338,15 +398,14 @@ mod tests {
     fn test_duress_heartbeat_sets_flag() {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(4);
+        let pk = test_pubkey();
 
         assert!(!tracker.has_duress(&plan_id));
 
         let msg = make_duress_heartbeat(1, plan_id, 300);
-        tracker.process_heartbeat(&msg).unwrap();
+        tracker.process_heartbeat(&msg, &pk).unwrap();
 
-        // Duress flag ayarlandı
         assert!(tracker.has_duress(&plan_id));
-        // Ama heartbeat başarılı sayıldı (dışarıdan normal görünür)
         assert_eq!(tracker.heartbeat_count(&plan_id), 1);
     }
 
@@ -355,12 +414,11 @@ mod tests {
     fn test_is_active_within() {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(5);
+        let pk = test_pubkey();
         let msg = make_heartbeat(1, plan_id, 1000);
-        tracker.process_heartbeat(&msg).unwrap();
+        tracker.process_heartbeat(&msg, &pk).unwrap();
 
-        // 1000 + 100 = 1100 slot içinde → aktif
         assert!(tracker.is_active_within(&plan_id, 100, SlotId(1100)));
-        // 1000 + 101 = 1101 slot dışında → pasif
         assert!(!tracker.is_active_within(&plan_id, 100, SlotId(1101)));
     }
 
@@ -378,11 +436,13 @@ mod tests {
     fn test_wrong_hash_rejected() {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(7);
+        let pk = test_pubkey();
 
-        let mut msg = make_heartbeat(1, plan_id, 500);
+        // build_unsigned ile hash/imza uyumsuz oluştur
+        let mut msg = HeartbeatBuilder::new(1, plan_id, SlotId(500)).build_unsigned();
         msg.heartbeat_hash = Hash32::from_bytes([0xFFu8; 32]); // Yanlış hash
 
-        let err = tracker.process_heartbeat(&msg).unwrap_err();
+        let err = tracker.process_heartbeat(&msg, &pk).unwrap_err();
         assert!(matches!(err, InheritanceError::InvalidHeartbeatSignature));
     }
 
@@ -391,9 +451,10 @@ mod tests {
     fn test_reset_clears_history() {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(8);
+        let pk = test_pubkey();
 
         let msg = make_duress_heartbeat(1, plan_id, 100);
-        tracker.process_heartbeat(&msg).unwrap();
+        tracker.process_heartbeat(&msg, &pk).unwrap();
 
         tracker.reset(&plan_id);
 
@@ -408,28 +469,66 @@ mod tests {
         let mut tracker = HeartbeatTracker::new();
         let plan_a = make_plan_id(10);
         let plan_b = make_plan_id(20);
+        let pk = test_pubkey();
 
         let msg_a = make_heartbeat(1, plan_a, 100);
         let msg_b = make_heartbeat(2, plan_b, 200);
 
-        tracker.process_heartbeat(&msg_a).unwrap();
-        tracker.process_heartbeat(&msg_b).unwrap();
+        tracker.process_heartbeat(&msg_a, &pk).unwrap();
+        tracker.process_heartbeat(&msg_b, &pk).unwrap();
 
         assert_eq!(tracker.last_heartbeat_slot(&plan_a), Some(SlotId(100)));
         assert_eq!(tracker.last_heartbeat_slot(&plan_b), Some(SlotId(200)));
     }
 
-    // Guardian Extension heartbeat — imza boş olsa bile kabul edilir
+    // Guardian Extension heartbeat — artık imza zorunlu (NOVA-RED-INHERITANCE-003)
     #[test]
-    fn test_guardian_extension_no_signature_ok() {
+    fn test_guardian_extension_signed_ok() {
         let mut tracker = HeartbeatTracker::new();
         let plan_id = make_plan_id(9);
+        let kp = test_keypair();
+        let pk = test_pubkey();
 
         let msg = HeartbeatBuilder::new(1, plan_id, SlotId(100))
             .with_guardian_extension(2)
-            .build_unsigned();
+            .build_signed(&kp);
 
-        let result = tracker.process_heartbeat(&msg);
+        let result = tracker.process_heartbeat(&msg, &pk);
         assert!(result.is_ok(), "Guardian extension heartbeat başarılı olmalı");
+    }
+
+    /// NOVA-RED-INHERITANCE-003: Sahte imza (0xDE*64) reddedilmeli.
+    #[test]
+    fn test_fake_signature_rejected() {
+        let mut tracker = HeartbeatTracker::new();
+        let plan_id = make_plan_id(11);
+        let pk = test_pubkey();
+
+        // build_unsigned → sahte imza [0xDE; 64]
+        let msg = HeartbeatBuilder::new(1, plan_id, SlotId(100)).build_unsigned();
+
+        let err = tracker.process_heartbeat(&msg, &pk).unwrap_err();
+        assert!(
+            matches!(err, InheritanceError::InvalidHeartbeatSignature),
+            "Sahte imza reddedilmeli: {:?}", err
+        );
+    }
+
+    /// NOVA-RED-INHERITANCE-003: Yanlış keypair ile imzalanmış heartbeat reddedilmeli.
+    #[test]
+    fn test_wrong_keypair_rejected() {
+        let mut tracker = HeartbeatTracker::new();
+        let plan_id = make_plan_id(12);
+        let owner_pk = test_pubkey(); // 0xA5 keypair pubkey
+
+        // Farklı keypair (0x55) ile imzala
+        let other_kp = EcdsaKeypair::from_secret_bytes(&[0x55u8; 32]).expect("keypair");
+        let msg = HeartbeatBuilder::new(1, plan_id, SlotId(100)).build_signed(&other_kp);
+
+        let err = tracker.process_heartbeat(&msg, &owner_pk).unwrap_err();
+        assert!(
+            matches!(err, InheritanceError::InvalidHeartbeatSignature),
+            "Yanlış keypair reddedilmeli: {:?}", err
+        );
     }
 }
