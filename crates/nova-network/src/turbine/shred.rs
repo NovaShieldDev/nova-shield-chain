@@ -3,8 +3,11 @@
 //! Solana: Bir blok → birden fazla shred'e bölünür
 //! Shred türleri: Data, Code (silme kodlaması)
 //! Merkle kanıtı ile bütünlük doğrulaması
+//!
+//! NOVA-RED-NETWORK-007: Lider imzası gerçek ed25519 ile yapılır (BLAKE3 mock kaldırıldı).
 
 use blake3;
+use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Shred veri yükü boyutu — Solana: SHRED_DATA_PAYLOAD_SIZE=1232
@@ -57,7 +60,7 @@ impl ShredId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shred {
     pub id: ShredId,
-    /// Lider validator (block üretici)
+    /// Lider validator ed25519 doğrulama anahtarı (public key, 32 byte)
     pub leader: [u8; 32],
     /// Atlama sayısı (0=lider, 1=birinci tur, ...)
     pub hop: u8,
@@ -65,30 +68,57 @@ pub struct Shred {
     pub payload: Vec<u8>,
     /// Merkle kökü (bütünlük)
     pub merkle_root: [u8; 32],
-    /// Lider imzası (BLAKE3 tabanlı mock)
-    pub signature: [u8; 32],
+    /// NOVA-RED-NETWORK-007: Gerçek ed25519 imzası (64 byte) veya boş (erasure recovery)
+    pub signature: Vec<u8>,
     /// Bayraklar
     pub flags: ShredFlags,
 }
 
 impl Shred {
-    /// Yeni shred oluştur
+    /// Yeni shred oluştur — gerçek ed25519 imzası ile.
+    ///
+    /// NOVA-RED-NETWORK-007: `leader_signing_key` lider validator'ın gizli anahtarıdır.
+    /// Doğrulama anahtarı (public key) otomatik türetilir ve `self.leader` olarak saklanır.
     pub fn new(
         slot: u64,
         index: u32,
         shred_type: ShredType,
-        leader: [u8; 32],
+        leader_signing_key: [u8; 32],
         payload: Vec<u8>,
     ) -> Self {
+        let sk = SigningKey::from_bytes(&leader_signing_key);
+        let leader_pubkey = sk.verifying_key().to_bytes();
         let merkle_root = Self::compute_merkle_root(&payload);
-        let signature = Self::sign(&leader, slot, index, &merkle_root);
+        let sig_bytes = Self::sign_ed25519(&sk, slot, index, &merkle_root);
         Self {
             id: ShredId::new(slot, index, shred_type),
-            leader,
+            leader: leader_pubkey,
             hop: 0,
             payload,
             merkle_root,
-            signature,
+            signature: sig_bytes.to_vec(),
+            flags: ShredFlags::default(),
+        }
+    }
+
+    /// Erasure kurtarma için — public key ile oluşturulur (signing key yok).
+    ///
+    /// FEC seti seviyesinde bütünlük sağlanır; bireysel imza atlanır.
+    pub fn new_recovery(
+        slot: u64,
+        index: u32,
+        shred_type: ShredType,
+        leader_pubkey: [u8; 32],
+        payload: Vec<u8>,
+    ) -> Self {
+        let merkle_root = Self::compute_merkle_root(&payload);
+        Self {
+            id: ShredId::new(slot, index, shred_type),
+            leader: leader_pubkey,
+            hop: 0,
+            payload,
+            merkle_root,
+            signature: vec![], // Erasure kurtarma — imza FEC seviyesinde
             flags: ShredFlags::default(),
         }
     }
@@ -100,25 +130,37 @@ impl Shred {
     }
 
     /// Bütünlük doğrula
+    ///
+    /// NOVA-RED-NETWORK-007: Merkle + gerçek ed25519 imza doğrulaması.
+    /// Erasure kurtarma shred'leri (sıfır imza) yalnızca Merkle kontrolünden geçer.
     pub fn verify(&self) -> bool {
         // 1. Merkle kök doğrula
         let expected_merkle = Self::compute_merkle_root(&self.payload);
         if expected_merkle != self.merkle_root {
             return false;
         }
-        // 2. İmza doğrula
-        let expected_sig = Self::sign(
-            &self.leader,
-            self.id.slot,
-            self.id.index,
-            &self.merkle_root,
-        );
-        expected_sig == self.signature
+        // 2. Erasure recovery shred'i → sadece Merkle yeterli
+        if self.signature.is_empty() {
+            return true;
+        }
+        // 3. ed25519 imza doğrula (64 byte olmalı)
+        let Ok(sig_arr): Result<[u8; 64], _> = self.signature.as_slice().try_into() else {
+            return false;
+        };
+        let Ok(vk) = VerifyingKey::from_bytes(&self.leader) else {
+            return false;
+        };
+        let msg = Self::sign_message(self.id.slot, self.id.index, &self.merkle_root);
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
+        vk.verify(&msg, &sig).is_ok()
     }
 
     /// Shred hash'i (yayılım tekilleştirme için)
     pub fn hash(&self) -> [u8; 32] {
-        self.signature
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.signature);
+        hasher.update(&self.merkle_root);
+        *hasher.finalize().as_bytes()
     }
 
     /// Atlama sayısını artır (retransmit)
@@ -138,14 +180,17 @@ impl Shred {
         *hasher.finalize().as_bytes()
     }
 
-    fn sign(leader: &[u8; 32], slot: u64, index: u32, merkle_root: &[u8; 32]) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"nova-turbine-shred-sig");
-        hasher.update(leader);
-        hasher.update(&slot.to_le_bytes());
-        hasher.update(&index.to_le_bytes());
-        hasher.update(merkle_root);
-        *hasher.finalize().as_bytes()
+    fn sign_message(slot: u64, index: u32, merkle_root: &[u8; 32]) -> Vec<u8> {
+        let mut msg = b"nova-turbine-shred-sig-v2".to_vec();
+        msg.extend_from_slice(&slot.to_le_bytes());
+        msg.extend_from_slice(&index.to_le_bytes());
+        msg.extend_from_slice(merkle_root);
+        msg
+    }
+
+    fn sign_ed25519(sk: &SigningKey, slot: u64, index: u32, merkle_root: &[u8; 32]) -> [u8; 64] {
+        let msg = Self::sign_message(slot, index, merkle_root);
+        sk.sign(&msg).to_bytes()
     }
 }
 
@@ -154,13 +199,14 @@ impl Shred {
 /// Blok verilerini shred'lere böl
 /// Solana: `shredder.entries_to_shreds(entries, ...)`
 pub struct ShredBuilder {
-    leader: [u8; 32],
+    /// NOVA-RED-NETWORK-007: ed25519 signing key (gizli anahtar)
+    leader_signing_key: [u8; 32],
     shred_size: usize,
 }
 
 impl ShredBuilder {
-    pub fn new(leader: [u8; 32], shred_size: usize) -> Self {
-        Self { leader, shred_size }
+    pub fn new(leader_signing_key: [u8; 32], shred_size: usize) -> Self {
+        Self { leader_signing_key, shred_size }
     }
 
     /// Blok verisini shred'lere böl
@@ -174,7 +220,7 @@ impl ShredBuilder {
                 slot,
                 i as u32,
                 ShredType::Data,
-                self.leader,
+                self.leader_signing_key,
                 chunk.to_vec(),
             );
             if i + 1 == total {

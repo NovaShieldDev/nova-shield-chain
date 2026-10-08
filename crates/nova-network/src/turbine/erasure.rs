@@ -312,7 +312,8 @@ impl ErasureDecoder {
             if let Some(Some(original)) = data_shreds.get(i) {
                 result.push(original.clone());
             } else {
-                result.push(Shred::new(
+                // NOVA-RED-NETWORK-007: Erasure kurtarma — signing key yok, new_recovery kullan.
+                result.push(Shred::new_recovery(
                     slot,
                     base_index + i as u32,
                     ShredType::Data,

@@ -9,10 +9,15 @@
 //! - Nonce kullanıldıktan sonra farklı bir değere ilerlenir
 //!
 //! ### Nova Uyarlaması
-//! - BLAKE3(address || counter || salt) → u64 nonce
-//! - Her adres için ayrı counter (monoton artar, ama nonce random görünür)
-//! - `NonceTracker`: adres başına kullanılmış nonce seti + next nonce üretimi
-//! - Replay koruması: kullanılmış nonce'lar bir süreli saklanır
+//! - NOVA-RED-MEMPOOL-004: Nonce'a counter gömülür — ring buffer taşması replay'ı önler
+//! - Nonce formatı: `(counter & 0xFFFF_FFFF) << 32 | BLAKE3(salt||addr||counter)[0..4]`
+//!   - Yüksek 32 bit: counter (kaynak doğrulama için)
+//!   - Düşük  32 bit: BLAKE3 hash parçası (tahmin edilemezlik)
+//! - Ring buffer + min_valid_counter çift koruma:
+//!   1. Nonce ring buffer'da → AlreadyUsed
+//!   2. Nonce'un counter'ı < min_valid_counter → kalıcı red
+//! - Her adres için ayrı counter (monoton artar)
+//! - Replay koruması: evict edilen nonce'lar min_valid_counter ile kalıcı olarak engellenir
 
 use blake3;
 use nova_primitives::Address;
@@ -38,14 +43,18 @@ pub struct NonceTracker {
     counters: HashMap<Address, u64>,
     /// Kullanılmış nonce'lar (replay koruması): address → Set<nonce>
     used_nonces: HashMap<Address, UsedNonceSet>,
+    /// NOVA-RED-MEMPOOL-004: Ring buffer evict olunca counter eşiği yükselir.
+    /// Nonce'un gömülü counter'ı < min_valid_counter ise kalıcı olarak reddedilir.
+    min_valid_counters: HashMap<Address, u64>,
     /// Global salt (runtime seed)
     salt: [u8; 32],
 }
 
 /// Kullanılmış nonce kümesi — sınırlı kapasiteli
+/// Her entry (nonce, counter) çifti olarak saklanır.
 struct UsedNonceSet {
     set: HashSet<u64>,
-    history: std::collections::VecDeque<u64>,
+    history: std::collections::VecDeque<(u64, u64)>, // (nonce, counter)
     capacity: usize,
 }
 
@@ -62,14 +71,19 @@ impl UsedNonceSet {
         self.set.contains(&nonce)
     }
 
-    fn insert(&mut self, nonce: u64) {
-        if self.set.len() >= self.capacity {
-            if let Some(oldest) = self.history.pop_front() {
-                self.set.remove(&oldest);
-            }
-        }
+    /// Nonce ekle; evict edilen entry'nin counter'ını döner (varsa).
+    fn insert(&mut self, nonce: u64, counter: u64) -> Option<u64> {
+        let evicted_counter = if self.set.len() >= self.capacity {
+            self.history.pop_front().map(|(old_nonce, old_counter)| {
+                self.set.remove(&old_nonce);
+                old_counter
+            })
+        } else {
+            None
+        };
         self.set.insert(nonce);
-        self.history.push_back(nonce);
+        self.history.push_back((nonce, counter));
+        evicted_counter
     }
 
     fn len(&self) -> usize {
@@ -82,6 +96,7 @@ impl NonceTracker {
         Self {
             counters: HashMap::new(),
             used_nonces: HashMap::new(),
+            min_valid_counters: HashMap::new(),
             salt,
         }
     }
@@ -93,7 +108,7 @@ impl NonceTracker {
 
     /// Bir adres için sonraki nonce üret (random görünümlü)
     ///
-    /// Nonce = BLAKE3(salt || address || counter)[0..8] olarak u64
+    /// Nonce formatı: `(counter & 0xFFFF_FFFF) << 32 | hash_part_u32`
     ///
     /// Solana: `durable_nonce` → bir account hash'i
     pub fn next_nonce(&mut self, address: &Address) -> u64 {
@@ -104,6 +119,9 @@ impl NonceTracker {
     }
 
     /// Nonce türetimi (statik, test için)
+    ///
+    /// NOVA-RED-MEMPOOL-004: Counter yüksek 32 bite gömülür.
+    /// Böylece herhangi bir nonce'tan kaynak counter çıkarılabilir.
     pub fn derive_nonce(salt: &[u8; 32], address: &Address, counter: u64) -> u64 {
         let hash = blake3::hash(&[
             NONCE_SALT,
@@ -111,20 +129,36 @@ impl NonceTracker {
             address.as_bytes().as_slice(),
             &counter.to_le_bytes(),
         ].concat());
-        u64::from_le_bytes(hash.as_bytes()[0..8].try_into().unwrap())
+        let hash_part = u32::from_le_bytes(hash.as_bytes()[0..4].try_into().unwrap()) as u64;
+        // Counter'ı yüksek 32 bite gömle (max 2^32 - 1 ≈ 4B işlem / adres)
+        let counter_part = (counter & 0xFFFF_FFFF) << 32;
+        counter_part | hash_part
     }
 
     /// Nonce'u işaretlenmiş olarak kaydet (bir TX'ta kullanıldı)
     ///
+    /// NOVA-RED-MEMPOOL-004: Ring buffer taştığında evict edilen counter
+    /// min_valid_counter'ı ilerletir → o counter'dan üretilen nonce artık kalıcı red.
+    ///
     /// Solana: `advance_nonce_account()`
     pub fn mark_used(&mut self, address: &Address, nonce: u64) {
-        self.used_nonces
+        // Nonce'tan gömülü counter'ı çıkar
+        let counter = nonce >> 32;
+        let evicted = self.used_nonces
             .entry(*address)
             .or_insert_with(|| UsedNonceSet::new(NONCE_HISTORY_DEPTH))
-            .insert(nonce);
+            .insert(nonce, counter);
+
+        // Evict olan counter, min_valid_counter'ı ilerletir
+        if let Some(evicted_counter) = evicted {
+            let min = self.min_valid_counters.entry(*address).or_insert(0);
+            if evicted_counter + 1 > *min {
+                *min = evicted_counter + 1;
+            }
+        }
     }
 
-    /// Bu nonce daha önce kullanıldı mı?
+    /// Bu nonce daha önce kullanıldı mı? (ring buffer kontrolü)
     pub fn is_used(&self, address: &Address, nonce: u64) -> bool {
         self.used_nonces
             .get(address)
@@ -133,9 +167,20 @@ impl NonceTracker {
     }
 
     /// Nonce doğrula: kullanılmamış ve geçerli bir değer mi?
+    ///
+    /// NOVA-RED-MEMPOOL-004: Çift kontrol:
+    /// 1. Ring buffer: nonce hâlâ kayıtlı mı?
+    /// 2. Min-counter: evict edilen nonce'un counter'ı kalıcı red listesinde mi?
     pub fn validate(&self, address: &Address, nonce: u64) -> NonceValidation {
         if nonce == 0 {
             return NonceValidation::InvalidZero;
+        }
+        // Nonce'tan gömülü counter'ı çıkar
+        let nonce_counter = nonce >> 32;
+        let min_counter = self.min_valid_counters.get(address).copied().unwrap_or(0);
+        if nonce_counter < min_counter {
+            // Counter evict edilmiş → kalıcı replay koruması
+            return NonceValidation::AlreadyUsed;
         }
         if self.is_used(address, nonce) {
             return NonceValidation::AlreadyUsed;
@@ -310,9 +355,9 @@ mod tests {
         let mut tracker = NonceTracker::default_salt();
         let a = addr(10);
 
-        // NONCE_HISTORY_DEPTH kadar nonce ekle
+        // NONCE_HISTORY_DEPTH kadar nonce ekle (counter=0 gömülü)
         for i in 0..NONCE_HISTORY_DEPTH {
-            tracker.mark_used(&a, i as u64 + 1);
+            tracker.mark_used(&a, i as u64 + 1); // nonce >> 32 = 0 (counter=0)
         }
         assert_eq!(tracker.used_count(&a), NONCE_HISTORY_DEPTH);
 
@@ -320,8 +365,28 @@ mod tests {
         tracker.mark_used(&a, NONCE_HISTORY_DEPTH as u64 + 1);
         assert_eq!(tracker.used_count(&a), NONCE_HISTORY_DEPTH); // hâlâ kapasite kadar
 
-        // En eski (nonce=1) artık yok
+        // En eski (nonce=1) ring buffer'da yok
         assert!(!tracker.is_used(&a, 1));
+    }
+
+    // 10b. NOVA-RED-MEMPOOL-004: Ring buffer evict sonrası replay kalıcı olarak reddedilir
+    #[test]
+    fn test_capacity_eviction_replay_rejected() {
+        let mut tracker = NonceTracker::default_salt();
+        let a = addr(11);
+
+        // NONCE_HISTORY_DEPTH kadar gerçek nonce üret ve işaretle
+        let mut first_nonce = 0u64;
+        for i in 0..=NONCE_HISTORY_DEPTH {
+            let nonce = tracker.generate_and_consume(&a);
+            if i == 0 { first_nonce = nonce; }
+        }
+
+        // first_nonce ring buffer'dan evict edildi
+        assert!(!tracker.is_used(&a, first_nonce));
+
+        // Ama min_valid_counter sayesinde validate de reddeder
+        assert_eq!(tracker.validate(&a, first_nonce), NonceValidation::AlreadyUsed);
     }
 
     // 11. Farklı adresler bağımsız counter
