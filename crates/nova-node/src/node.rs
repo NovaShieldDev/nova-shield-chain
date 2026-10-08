@@ -329,6 +329,12 @@ impl AsyncNodeRunner {
         listen_port: u16,
         rpc_port: u16,
     ) -> NodeResult<Self> {
+        // NOVA-RED-NODE-012: Sıfır local_key kimlik anahtarı reddedilir.
+        if local_key == [0u8; 32] {
+            return Err(NodeError::AuthorizationError {
+                reason: "local_key sıfır olamaz — keystore'dan gerçek anahtar kullanın".into(),
+            });
+        }
         let engine = FullNodeEngine::new(validator_id, validators, local_key, max_peers, listen_port)?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let tcp_network = NetworkService::with_key(max_peers as u32, listen_port, local_key);
@@ -367,6 +373,12 @@ impl AsyncNodeRunner {
         rpc_port: u16,
         data_dir: &str,
     ) -> NodeResult<Self> {
+        // NOVA-RED-NODE-012: Sıfır local_key reddedilir.
+        if local_key == [0u8; 32] {
+            return Err(NodeError::AuthorizationError {
+                reason: "local_key sıfır olamaz — keystore'dan gerçek anahtar kullanın".into(),
+            });
+        }
         let engine = FullNodeEngine::new_with_data_dir(
             validator_id, validators, local_key, max_peers, listen_port, data_dir,
         )?;
@@ -782,7 +794,7 @@ mod tests {
     #[tokio::test]
     async fn test_async_runner_new() {
         let validators = make_validators(3);
-        let runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 50, 30400, 0).unwrap();
+        let runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 50, 30400, 0).unwrap();
         assert_eq!(runner.slots_run(), 0);
         assert_eq!(runner.slot_errors(), 0);
     }
@@ -790,7 +802,7 @@ mod tests {
     #[tokio::test]
     async fn test_async_runner_run_fixed_slots() {
         let validators = make_validators(1); // tek validator → her zaman proposer
-        let mut runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 50, 30401, 0).unwrap();
+        let mut runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 50, 30401, 0).unwrap();
 
         // 3 slot çalıştır, hızlı (1ms interval)
         runner.run(1, Some(3)).await.unwrap();
@@ -804,7 +816,7 @@ mod tests {
     #[tokio::test]
     async fn test_async_runner_shutdown_signal() {
         let validators = make_validators(1);
-        let mut runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 50, 30402, 0).unwrap();
+        let mut runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 50, 30402, 0).unwrap();
 
         // Ayrı task: 5ms sonra shutdown gönder
         let shutdown_tx = runner.shutdown_tx.clone();
@@ -824,7 +836,7 @@ mod tests {
     async fn test_async_runner_consensus_network_runtime_sync() {
         // Tek validator → her slotta proposer → consensus + runtime sync olmalı
         let validators = make_validators(1);
-        let mut runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 50, 30403, 0).unwrap();
+        let mut runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 50, 30403, 0).unwrap();
 
         runner.run(1, Some(5)).await.unwrap();
 
@@ -838,7 +850,7 @@ mod tests {
     #[tokio::test]
     async fn test_async_runner_base_fee_updates_over_slots() {
         let validators = make_validators(1);
-        let mut runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 50, 30404, 0).unwrap();
+        let mut runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 50, 30404, 0).unwrap();
 
         let initial_fee = runner.engine().runtime.current_base_fee();
         runner.run(1, Some(10)).await.unwrap();
@@ -856,7 +868,7 @@ mod tests {
         let v1 = make_validators(1);
         let v2 = make_validators(1);
 
-        let mut r1 = AsyncNodeRunner::new(1, v1, [0u8; 32], 10, 30405, 0).unwrap();
+        let mut r1 = AsyncNodeRunner::new(1, v1, [0x01u8; 32], 10, 30405, 0).unwrap();
         let mut r2 = AsyncNodeRunner::new(1, v2, [1u8; 32], 10, 30406, 0).unwrap();
 
         // Her ikisini paralel çalıştır
@@ -877,7 +889,7 @@ mod tests {
     #[tokio::test]
     async fn test_rpc_server_starts_with_runner() {
         let validators = make_validators(1);
-        let mut runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 10, 30410, 0).unwrap();
+        let mut runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 10, 30410, 0).unwrap();
 
         // 3 slot çalıştır (RPC server spawn edilir)
         runner.run(1, Some(3)).await.unwrap();
@@ -895,7 +907,7 @@ mod tests {
     #[tokio::test]
     async fn test_rpc_state_block_count_increments() {
         let validators = make_validators(1);
-        let mut runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 10, 30411, 0).unwrap();
+        let mut runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 10, 30411, 0).unwrap();
 
         let state = runner.rpc_state();
         let initial_blocks = state.best_block_number();
@@ -913,7 +925,7 @@ mod tests {
     async fn test_rpc_state_isolated_per_runner() {
         let v1 = make_validators(1);
         let v2 = make_validators(1);
-        let mut r1 = AsyncNodeRunner::new(1, v1, [0u8; 32], 10, 30412, 0).unwrap();
+        let mut r1 = AsyncNodeRunner::new(1, v1, [0x01u8; 32], 10, 30412, 0).unwrap();
         let mut r2 = AsyncNodeRunner::new(1, v2, [1u8; 32], 10, 30413, 0).unwrap();
 
         let s1 = r1.rpc_state();
@@ -929,7 +941,7 @@ mod tests {
     #[tokio::test]
     async fn test_rpc_server_shuts_down_gracefully() {
         let validators = make_validators(1);
-        let mut runner = AsyncNodeRunner::new(1, validators, [0u8; 32], 10, 30414, 0).unwrap();
+        let mut runner = AsyncNodeRunner::new(1, validators, [0x01u8; 32], 10, 30414, 0).unwrap();
         let shutdown_tx = runner.shutdown_tx.clone();
 
         tokio::spawn(async move {

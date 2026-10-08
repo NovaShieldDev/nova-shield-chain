@@ -93,7 +93,8 @@ impl Default for RpcConfig {
             http_port: 9_933,
             ws_port: 9_944,
             max_connections: 100,
-            cors_origins: vec!["*".into()],
+            // NOVA-RED-NODE-003: Wildcard CORS kaldırıldı — explicit origin listesi gerektirir.
+            cors_origins: vec![],
             http_enabled: true,
             ws_enabled: true,
         }
@@ -238,7 +239,8 @@ impl NodeConfig {
             },
             rpc: RpcConfig {
                 max_connections: 500,
-                cors_origins: vec!["*".into()],
+                // NOVA-RED-NODE-003: Mainnet'te wildcard CORS yasak — boş (kısıtlı).
+                cors_origins: vec![],
                 ..Default::default()
             },
             validator: ValidatorConfig {

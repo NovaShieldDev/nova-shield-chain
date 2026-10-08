@@ -122,6 +122,9 @@ pub struct UpgradeManager {
     state: UpgradeState,
     /// Upgrade state dosyası (kalıcı depolama)
     state_path: Option<std::path::PathBuf>,
+    /// NOVA-RED-NODE-004/005: Yalnızca bu governance anahtarı upgrade planlayabilir.
+    /// `None` iken yalnızca geliştirme/test modunda kabul edilir.
+    governance_key: Option<[u8; 32]>,
 }
 
 impl UpgradeManager {
@@ -130,6 +133,7 @@ impl UpgradeManager {
         Self {
             state: UpgradeState::new(),
             state_path: None,
+            governance_key: None,
         }
     }
 
@@ -149,7 +153,14 @@ impl UpgradeManager {
         } else {
             UpgradeState::new()
         };
-        Ok(Self { state, state_path: Some(path) })
+        Ok(Self { state, state_path: Some(path), governance_key: None })
+    }
+
+    /// NOVA-RED-NODE-004: Governance anahtarını ayarla.
+    ///
+    /// Production'da bu metod çağrılmadan upgrade planlanamaz.
+    pub fn set_governance_key(&mut self, key: [u8; 32]) {
+        self.governance_key = Some(key);
     }
 
     /// Geçerli protocol versiyonu
@@ -169,8 +180,23 @@ impl UpgradeManager {
 
     /// Governance upgrade ekle
     ///
+    /// NOVA-RED-NODE-004: `caller` governance anahtarıyla eşleşmelidir.
+    /// NOVA-RED-NODE-005: `is_emergency=true` olsa bile aynı yetki kontrolü uygulanır.
+    ///
     /// Aynı ID'li upgrade zaten varsa `Err` döner.
-    pub fn schedule_upgrade(&mut self, upgrade: PendingUpgrade) -> NodeResult<()> {
+    pub fn schedule_upgrade(&mut self, upgrade: PendingUpgrade, caller: &[u8; 32]) -> NodeResult<()> {
+        // Governance key ayarlanmışsa yetki kontrolü yap
+        if let Some(gov_key) = &self.governance_key {
+            if caller != gov_key {
+                return Err(NodeError::AuthorizationError {
+                    reason: format!(
+                        "upgrade planlama yetkisi yok: upgrade_id={}, caller={:?}",
+                        upgrade.id,
+                        &caller[..4]
+                    ),
+                });
+            }
+        }
         if self.state.pending.iter().any(|u| u.id == upgrade.id) {
             return Err(NodeError::ConfigError {
                 reason: format!("upgrade {} zaten planlanmış", upgrade.id),
@@ -290,6 +316,10 @@ impl Default for UpgradeManager {
 mod tests {
     use super::*;
 
+    /// Testlerde governance key'i olmayan (geliştirme modu) caller
+    const TEST_CALLER: &[u8; 32] = &[0x01u8; 32];
+    const GOV_KEY: [u8; 32] = [0xAAu8; 32];
+
     fn make_upgrade(id: u64, activate_at: u64) -> PendingUpgrade {
         PendingUpgrade {
             id,
@@ -312,21 +342,21 @@ mod tests {
     #[test]
     fn test_schedule_upgrade() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
         assert_eq!(mgr.pending_count(), 1);
     }
 
     #[test]
     fn test_schedule_duplicate_fails() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
-        assert!(mgr.schedule_upgrade(make_upgrade(1, 200)).is_err());
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
+        assert!(mgr.schedule_upgrade(make_upgrade(1, 200), TEST_CALLER).is_err());
     }
 
     #[test]
     fn test_cancel_upgrade() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
         mgr.cancel_upgrade(1).unwrap();
         assert_eq!(mgr.pending_count(), 0);
     }
@@ -340,8 +370,8 @@ mod tests {
     #[test]
     fn test_check_returns_active_only() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
-        mgr.schedule_upgrade(make_upgrade(2, 200)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
+        mgr.schedule_upgrade(make_upgrade(2, 200), TEST_CALLER).unwrap();
 
         let active = mgr.check(100);
         assert_eq!(active.len(), 1);
@@ -354,7 +384,7 @@ mod tests {
     #[test]
     fn test_check_none_before_activation() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
         assert!(mgr.check(99).is_empty());
     }
 
@@ -369,7 +399,7 @@ mod tests {
             description: "Emergency patch".into(),
             proposal_hash: "0".repeat(64),
         };
-        mgr.schedule_upgrade(emergency).unwrap();
+        mgr.schedule_upgrade(emergency, TEST_CALLER).unwrap();
         // Blok 1'de dahi aktif olmalı
         assert_eq!(mgr.check(1).len(), 1);
     }
@@ -386,7 +416,7 @@ mod tests {
             description: "v2 upgrade".into(),
             proposal_hash: "a".repeat(64),
         };
-        mgr.schedule_upgrade(upgrade).unwrap();
+        mgr.schedule_upgrade(upgrade, TEST_CALLER).unwrap();
         let records = mgr.apply_upgrades(100).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(mgr.current_version(), new_ver);
@@ -397,7 +427,7 @@ mod tests {
     #[test]
     fn test_apply_upgrades_no_active_returns_empty() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 200)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 200), TEST_CALLER).unwrap();
         let records = mgr.apply_upgrades(100).unwrap();
         assert!(records.is_empty());
         assert_eq!(mgr.pending_count(), 1);
@@ -406,8 +436,8 @@ mod tests {
     #[test]
     fn test_apply_multiple_upgrades() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
-        mgr.schedule_upgrade(make_upgrade(2, 100)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
+        mgr.schedule_upgrade(make_upgrade(2, 100), TEST_CALLER).unwrap();
         let records = mgr.apply_upgrades(100).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(mgr.pending_count(), 0);
@@ -417,7 +447,7 @@ mod tests {
     #[test]
     fn test_apply_idempotent() {
         let mut mgr = UpgradeManager::new();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
         mgr.apply_upgrades(100).unwrap();
         // İkinci çağrıda upgrade zaten uygulanmış, pending yok
         let records2 = mgr.apply_upgrades(100).unwrap();
@@ -436,7 +466,7 @@ mod tests {
             description: "Big upgrade".into(),
             proposal_hash: "b".repeat(64),
         };
-        mgr.schedule_upgrade(upgrade).unwrap();
+        mgr.schedule_upgrade(upgrade, TEST_CALLER).unwrap();
         let records = mgr.apply_upgrades(500).unwrap();
         let rec = &records[0];
         assert_eq!(rec.id, 42);
@@ -457,7 +487,7 @@ mod tests {
         let path = dir.join("upgrade_state.json");
 
         let mut mgr = UpgradeManager::load(&path).unwrap();
-        mgr.schedule_upgrade(make_upgrade(1, 100)).unwrap();
+        mgr.schedule_upgrade(make_upgrade(1, 100), TEST_CALLER).unwrap();
         mgr.apply_upgrades(100).unwrap();
 
         let mgr2 = UpgradeManager::load(&path).unwrap();
@@ -481,10 +511,47 @@ mod tests {
             description: "Gas limit artışı".into(),
             proposal_hash: "c".repeat(64),
         };
-        mgr.schedule_upgrade(upgrade).unwrap();
+        mgr.schedule_upgrade(upgrade, TEST_CALLER).unwrap();
         let records = mgr.apply_upgrades(50).unwrap();
         assert_eq!(records.len(), 1);
         // ParameterChange versiyonu değiştirmez
         assert_eq!(mgr.current_version(), NOVA_PROTOCOL_VERSION);
+    }
+
+    // ── NOVA-RED-NODE-004/005: Governance yetki testleri ──────────────────────
+
+    #[test]
+    fn test_schedule_upgrade_authorized_caller_accepted() {
+        let mut mgr = UpgradeManager::new();
+        mgr.set_governance_key(GOV_KEY);
+        mgr.schedule_upgrade(make_upgrade(1, 100), &GOV_KEY).unwrap();
+        assert_eq!(mgr.pending_count(), 1);
+    }
+
+    #[test]
+    fn test_schedule_upgrade_unauthorized_caller_rejected() {
+        let mut mgr = UpgradeManager::new();
+        mgr.set_governance_key(GOV_KEY);
+        let wrong_caller = [0xBBu8; 32];
+        let result = mgr.schedule_upgrade(make_upgrade(1, 100), &wrong_caller);
+        assert!(matches!(result, Err(NodeError::AuthorizationError { .. })));
+    }
+
+    #[test]
+    fn test_schedule_emergency_upgrade_unauthorized_rejected() {
+        // NOVA-RED-NODE-005: is_emergency=true olsa bile yetki kontrolü geçerli
+        let mut mgr = UpgradeManager::new();
+        mgr.set_governance_key(GOV_KEY);
+        let emergency = PendingUpgrade {
+            id: 1,
+            kind: UpgradeKind::SecurityPatch { description: "CVE-0002".into() },
+            activate_at_block: 9_999_999,
+            is_emergency: true,
+            description: "Emergency patch".into(),
+            proposal_hash: "0".repeat(64),
+        };
+        let wrong_caller = [0xCCu8; 32];
+        let result = mgr.schedule_upgrade(emergency, &wrong_caller);
+        assert!(matches!(result, Err(NodeError::AuthorizationError { .. })));
     }
 }

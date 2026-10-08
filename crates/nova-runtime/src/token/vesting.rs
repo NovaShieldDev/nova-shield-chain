@@ -165,21 +165,34 @@ impl VestingSchedule {
             }
 
             Self::HalvingSchedule { total, distributed } => {
-                // Halving takvimi — epoch bazlı hesap
-                // Yıl 1-2: %8 APY → yılda 5_120_000 NOVA
-                // Yıl 3-4: %4 APY → yılda 2_560_000 NOVA
-                // Yıl 5-6: %2 APY → yılda 1_280_000 NOVA
-                // Yıl 7-10: %1 APY → yılda 640_000 NOVA
-                let year = elapsed_months / 12;
-                let annual: u128 = match year {
-                    0..=1 => 5_120_000 * NOVA_DECIMALS_FACTOR,
-                    2..=3 => 2_560_000 * NOVA_DECIMALS_FACTOR,
-                    4..=5 => 1_280_000 * NOVA_DECIMALS_FACTOR,
-                    _ => 640_000 * NOVA_DECIMALS_FACTOR,
+                // NOVA-RED-RUNTIME-006: Her yılı ayrı ayrı biriktirir — yıl sınırında
+                // gerileme (regression) olmaz.
+                //
+                // Halving takvimi:
+                // Yıl 0-1 (ay  0-23): %8 APY → yılda 5_120_000 NOVA
+                // Yıl 2-3 (ay 24-47): %4 APY → yılda 2_560_000 NOVA
+                // Yıl 4-5 (ay 48-71): %2 APY → yılda 1_280_000 NOVA
+                // Yıl ≥6  (ay   72+): %1 APY → yılda   640_000 NOVA
+                let year = (elapsed_months / 12) as usize;
+                let annual_for = |y: usize| -> u128 {
+                    match y {
+                        0 | 1 => 5_120_000 * NOVA_DECIMALS_FACTOR,
+                        2 | 3 => 2_560_000 * NOVA_DECIMALS_FACTOR,
+                        4 | 5 => 1_280_000 * NOVA_DECIMALS_FACTOR,
+                        _     =>   640_000 * NOVA_DECIMALS_FACTOR,
+                    }
                 };
-                // Aylık vesting = yıllık / 12
-                let monthly = annual / 12;
-                let vested = monthly * elapsed_months as u128;
+                // Tamamlanmış yılları topla
+                let mut vested: u128 = 0;
+                for y in 0..year {
+                    vested = vested.saturating_add(annual_for(y));
+                }
+                // Mevcut yılın kalan aylarını ekle
+                let remaining = elapsed_months % 12;
+                if remaining > 0 {
+                    let monthly = annual_for(year) / 12;
+                    vested = vested.saturating_add(monthly * remaining as u128);
+                }
                 vested.min(*total).saturating_sub(*distributed)
             }
         }
@@ -470,15 +483,19 @@ mod tests {
         let s = VestingSchedule::halving(ALLOC_STAKING_REWARDS);
         let year1_monthly = 5_120_000 * NOVA_DECIMALS_FACTOR / 12;
         assert_eq!(s.vested_amount(month(1)), year1_monthly);
-        assert_eq!(s.vested_amount(month(12)), year1_monthly * 12);
+        // Ay 12 = 1 tam yıl — integer bölme hatası olmadan tam yıllık döner.
+        assert_eq!(s.vested_amount(month(12)), 5_120_000 * NOVA_DECIMALS_FACTOR);
     }
 
     #[test]
     fn test_halving_year3_rate_halved() {
         let s = VestingSchedule::halving(ALLOC_STAKING_REWARDS);
-        // Yıl 3'te yıllık oran yarıya iner
+        // Ay 25 = yıl 2 tamamlandı (0,1) + 1 ay kaldı (yıl 2)
+        // NOVA-RED-RUNTIME-006: Doğru birikim: 2 tam yıl (5_120_000×2) + 1 ay year2 rate
+        let year1_annual = 5_120_000 * NOVA_DECIMALS_FACTOR;
         let year3_monthly = 2_560_000 * NOVA_DECIMALS_FACTOR / 12;
-        assert_eq!(s.vested_amount(month(25)), year3_monthly * 25); // yıl 3. ay 1
+        let expected = year1_annual * 2 + year3_monthly * 1; // 2 tam yıl + 1 ay
+        assert_eq!(s.vested_amount(month(25)), expected);
     }
 
     #[test]
