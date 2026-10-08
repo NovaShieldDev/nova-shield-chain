@@ -13,6 +13,7 @@
 use crate::errors::{GuardError, GuardResult};
 use crate::types::blake3_hash_many;
 use serde::{Deserialize, Serialize};
+use hex;
 
 // ─── Sabitler ─────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,9 @@ pub struct BeefyLightClient {
     imported: Vec<ImportedCommitment>,
     /// İstek sayacı — Polkadot: RequestCount
     request_count: u32,
+    /// NOVA-RED-GUARD-006: Yetkili güncelleme yapıcı (32-byte validator public key).
+    /// None ise `update_authority_set` her zaman reddeder.
+    authorized_updater: Option<[u8; 32]>,
 }
 
 impl BeefyLightClient {
@@ -214,12 +218,39 @@ impl BeefyLightClient {
             best_block_number: 0,
             imported: vec![],
             request_count: 0,
+            authorized_updater: None,
         }
     }
 
-    /// Validator set güncelle
-    pub fn update_authority_set(&mut self, new_set: BeefyAuthoritySet) {
+    /// Yetkili güncelleme yapıcı kaydet (genesis'te veya governance kararıyla)
+    pub fn set_authorized_updater(&mut self, updater_pubkey: [u8; 32]) {
+        self.authorized_updater = Some(updater_pubkey);
+    }
+
+    /// Validator set güncelle — NOVA-RED-GUARD-006 düzeltmesi.
+    ///
+    /// Polkadot: `update_authority_set(origin, ...)` yalnızca `T::BridgeOwner` origin'i
+    /// tarafından çağrılabilir. Burada `caller_pubkey` ile authorized_updater karşılaştırılır.
+    ///
+    /// # Hata
+    /// `GuardError::UnauthorizedAuthoritySetUpdate` — caller yetkili değilse.
+    pub fn update_authority_set(
+        &mut self,
+        caller_pubkey: &[u8; 32],
+        new_set: BeefyAuthoritySet,
+    ) -> GuardResult<()> {
+        // NOVA-RED-GUARD-006: Yetkisiz caller authority set'i değiştiremez.
+        // Eğer authorized_updater ayarlanmamışsa tamamen reddedilir.
+        match &self.authorized_updater {
+            Some(authorized) if authorized == caller_pubkey => {}
+            _ => {
+                return Err(GuardError::UnauthorizedAuthoritySetUpdate {
+                    caller: hex::encode(caller_pubkey),
+                });
+            }
+        }
         self.next_authority_set = Some(new_set);
+        Ok(())
     }
 
     /// İmzalanmış taahhüdü gönder — Polkadot: `submit_commitment`
@@ -360,6 +391,39 @@ mod tests {
         let lc = BeefyLightClient::initialize(set);
         assert_eq!(lc.best_block(), 0);
         assert_eq!(lc.imported_count(), 0);
+    }
+
+    #[test]
+    fn test_beefy_update_authority_set_authorized() {
+        let set = make_authority_set(5);
+        let mut lc = BeefyLightClient::initialize(set.clone());
+        let admin_key = [0xADu8; 32];
+        lc.set_authorized_updater(admin_key);
+        let new_set = make_authority_set(7);
+        assert!(lc.update_authority_set(&admin_key, new_set).is_ok());
+        assert!(lc.next_authority_set.is_some());
+    }
+
+    #[test]
+    fn test_beefy_update_authority_set_unauthorized() {
+        let set = make_authority_set(5);
+        let mut lc = BeefyLightClient::initialize(set.clone());
+        let admin_key = [0xADu8; 32];
+        lc.set_authorized_updater(admin_key);
+        // Farklı bir key ile deneme
+        let attacker_key = [0xBAu8; 32];
+        let new_set = make_authority_set(7);
+        let err = lc.update_authority_set(&attacker_key, new_set).unwrap_err();
+        assert!(matches!(err, GuardError::UnauthorizedAuthoritySetUpdate { .. }));
+    }
+
+    #[test]
+    fn test_beefy_update_authority_set_no_updater_set() {
+        let set = make_authority_set(5);
+        let mut lc = BeefyLightClient::initialize(set.clone());
+        // authorized_updater ayarlanmamış → herkes reddedilir
+        let err = lc.update_authority_set(&[0xAAu8; 32], make_authority_set(7)).unwrap_err();
+        assert!(matches!(err, GuardError::UnauthorizedAuthoritySetUpdate { .. }));
     }
 
     #[test]

@@ -99,11 +99,20 @@ impl ContractStore {
         self.contracts.get(&id).map(|c| c.clone()).ok_or(GuardianError::ContractNotFound)
     }
 
-    pub fn terminate(&self, id: ContractId) -> GuardianResult<()> {
-        self.contracts
+    /// Sözleşmeyi sonlandır.
+    ///
+    /// NOVA-RED-GUARDIAN-002: Yalnızca sözleşmedeki `user` veya `guardian` sonlandırabilir.
+    /// Üçüncü bir taraf başkasının sözleşmesini sonlandıramaz.
+    pub fn terminate(&self, id: ContractId, caller: Address) -> GuardianResult<()> {
+        let mut entry = self.contracts
             .get_mut(&id)
-            .ok_or(GuardianError::ContractNotFound)
-            .map(|mut c| c.status = ContractStatus::Terminated)
+            .ok_or(GuardianError::ContractNotFound)?;
+        // NOVA-RED-GUARDIAN-002: caller sözleşmenin tarafı mı?
+        if caller != entry.user && caller != entry.guardian {
+            return Err(GuardianError::Unauthorized);
+        }
+        entry.status = ContractStatus::Terminated;
+        Ok(())
     }
 
     /// Kullanıcının aktif sözleşmeleri
@@ -152,8 +161,27 @@ mod tests {
     fn test_contract_terminate() {
         let store = ContractStore::new();
         let id = store.create(addr(1), addr(2), 50, 100, None, SlotId(0));
-        store.terminate(id).unwrap();
+        // user (addr(1)) sonlandırabilir
+        store.terminate(id, addr(1)).unwrap();
         assert_eq!(store.get(id).unwrap().status, ContractStatus::Terminated);
+    }
+
+    #[test]
+    fn test_contract_terminate_by_guardian() {
+        let store = ContractStore::new();
+        let id = store.create(addr(1), addr(2), 50, 100, None, SlotId(0));
+        // guardian (addr(2)) sonlandırabilir
+        store.terminate(id, addr(2)).unwrap();
+        assert_eq!(store.get(id).unwrap().status, ContractStatus::Terminated);
+    }
+
+    #[test]
+    fn test_contract_terminate_unauthorized() {
+        let store = ContractStore::new();
+        let id = store.create(addr(1), addr(2), 50, 100, None, SlotId(0));
+        // üçüncü taraf sonlandıramaz
+        let err = store.terminate(id, addr(99)).unwrap_err();
+        assert!(matches!(err, GuardianError::Unauthorized));
     }
 
     #[test]

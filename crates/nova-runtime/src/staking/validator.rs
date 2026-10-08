@@ -485,18 +485,40 @@ pub struct PhragmenResult {
     pub validator_id: ValidatorId,
     /// Bu validator'ın aldığı toplam backing stake.
     pub backing_stake: u128,
-    /// Phragmén load değeri (düşük = daha adil dağılım).
-    pub load: f64,
+    /// Phragmén load değeri — pay/payda rational (düşük = daha adil dağılım).
+    /// NOVA-RED-RUNTIME-004: f64 yerine belirleyici rational aritmetik.
+    pub load_num: u128,
+    pub load_den: u128,
+}
+
+/// NOVA-RED-RUNTIME-004: Belirleyici rational aritmetik için yardımcı yapı.
+/// score = num / den — f64 kullanmadan tam sayı olarak karşılaştırılabilir.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PhragRational {
+    num: u128,
+    den: u128,
+}
+
+impl PhragRational {
+    const ZERO: Self = Self { num: 0, den: 1 };
+    const MAX: Self = Self { num: u128::MAX, den: 1 };
+
+    fn new(num: u128, den: u128) -> Self {
+        Self { num, den: den.max(1) }
+    }
+
+    /// self < other?  —  a/b < c/d  iff  a*d < c*b (saturating, taşma güvenli)
+    fn lt(self, other: Self) -> bool {
+        self.num.saturating_mul(other.den) < other.num.saturating_mul(self.den)
+    }
 }
 
 impl PhragmenElection {
     /// Sequential Phragmén ile `n_validators` adet validator seç.
     ///
-    /// `candidates`: (ValidatorId, self_stake) listesi (ön filtreli, unjailed, bonded-eligible)
-    /// `nominators`: delegatör oyları
-    /// `n_validators`: seçilecek validator sayısı
-    ///
-    /// Returns: seçilen validator'lar (backing_stake azalan sırada)
+    /// NOVA-RED-RUNTIME-004: f64 floating point kaldırıldı.
+    /// Tüm yük değerleri `PhragRational {num, den}` olarak tutulur.
+    /// Karşılaştırmalar çapraz çarpım (cross-multiplication) ile yapılır → deterministik.
     pub fn elect(
         candidates: &[(ValidatorId, u128)],
         nominators: &[NominatorVote],
@@ -508,48 +530,49 @@ impl PhragmenElection {
 
         let n = n_validators.min(candidates.len());
 
-        // Her adayın toplam backing stake'i ve phragmén yükü
-        // Başlangıç: yük = 0, backing = self_stake
         let mut backing: Vec<u128> = candidates.iter().map(|(_, s)| *s).collect();
-        let mut loads: Vec<f64> = vec![0.0; candidates.len()];
-        // Her nominatörün mevcut yükü
-        let mut nom_loads: Vec<f64> = vec![0.0; nominators.len()];
+        let mut loads: Vec<PhragRational> = vec![PhragRational::ZERO; candidates.len()];
+        let mut nom_loads: Vec<PhragRational> = vec![PhragRational::ZERO; nominators.len()];
 
         let mut elected: Vec<usize> = Vec::with_capacity(n);
         let mut elected_set: std::collections::HashSet<usize> = Default::default();
 
         for _round in 0..n {
-            // Her seçilmemiş aday için marjinal yük artışını hesapla
             let mut best_candidate = None;
-            let mut best_score = f64::MAX;
+            let mut best_score = PhragRational::MAX;
 
             for (ci, (_, self_stake)) in candidates.iter().enumerate() {
                 if elected_set.contains(&ci) {
                     continue;
                 }
 
-                // Bu adayı seçersek toplam backing stake ne olur?
-                let mut total_backing = *self_stake as f64;
+                let mut total_backing: u128 = *self_stake;
                 for nom in nominators {
                     if nom.targets.contains(&candidates[ci].0) {
-                        total_backing += nom.total_stake as f64;
+                        total_backing = total_backing.saturating_add(nom.total_stake);
                     }
                 }
-
-                if total_backing == 0.0 {
+                if total_backing == 0 {
                     continue;
                 }
 
-                // Phragmén: score = (1 + Σ nom_loads_i * nom_stake_i) / total_backing
-                let mut numerator = 1.0f64;
+                // score = (SCALE + Σ nom_load_term) / total_backing
+                // nom_load_term = nom_load.num * nom_stake / nom_load.den
+                const SCALE: u128 = 1_000_000_000;
+                let mut numerator: u128 = SCALE;
                 for (ni, nom) in nominators.iter().enumerate() {
                     if nom.targets.contains(&candidates[ci].0) {
-                        numerator += nom_loads[ni] * nom.total_stake as f64;
+                        let l = nom_loads[ni];
+                        if l.num > 0 {
+                            let term = l.num.saturating_mul(nom.total_stake)
+                                .saturating_div(l.den.max(1));
+                            numerator = numerator.saturating_add(term);
+                        }
                     }
                 }
-                let score = numerator / total_backing;
 
-                if score < best_score {
+                let score = PhragRational::new(numerator, total_backing);
+                if score.lt(best_score) {
                     best_score = score;
                     best_candidate = Some(ci);
                 }
@@ -560,19 +583,15 @@ impl PhragmenElection {
             elected_set.insert(ci);
             loads[ci] = best_score;
 
-            // Seçilen adayı destekleyen nominatörlerin yüklerini güncelle
             for (ni, nom) in nominators.iter().enumerate() {
                 if nom.targets.contains(&candidates[ci].0) {
                     nom_loads[ni] = best_score;
                 }
             }
 
-            // Backing stake güncelle
-            for (ni, nom) in nominators.iter().enumerate() {
+            for nom in nominators.iter() {
                 if nom.targets.contains(&candidates[ci].0) {
-                    backing[ci] = backing[ci].saturating_add(
-                        (nom.total_stake as f64 * (best_score / loads[ci].max(1e-10))) as u128,
-                    );
+                    backing[ci] = backing[ci].saturating_add(nom.total_stake);
                 }
             }
         }
@@ -582,11 +601,11 @@ impl PhragmenElection {
             .map(|&ci| PhragmenResult {
                 validator_id: candidates[ci].0,
                 backing_stake: backing[ci],
-                load: loads[ci],
+                load_num: loads[ci].num,
+                load_den: loads[ci].den,
             })
             .collect();
 
-        // Backing stake azalan sıraya göre sırala
         results.sort_by(|a, b| b.backing_stake.cmp(&a.backing_stake));
         results
     }

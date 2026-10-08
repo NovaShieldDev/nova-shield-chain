@@ -150,6 +150,17 @@ impl ConstraintSynthesizer<Fr> for UnstakeCircuit {
         // ── Kısıt 4: unbonded amount tutarlılığı ──────────────────────────────
         nv_var.enforce_equal(&amount_pub)?;
 
+        // ── Kısıt 5 (NOVA-RED-ZK-007): new_value <= orig_value ───────────────
+        // diff = orig_value - new_value ≥ 0 (range check: diff ∈ [0, 2^128))
+        // Eğer new_value > orig_value → diff büyük bir sayıdır → kısıt başarısız.
+        {
+            let diff = ov_var.clone() - nv_var.clone();
+            let diff_bits = diff.to_bits_le()?;
+            for bit in &diff_bits[128..] {
+                bit.enforce_equal(&Boolean::constant(false))?;
+            }
+        }
+
         Ok(())
     }
 }

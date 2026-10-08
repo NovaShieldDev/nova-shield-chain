@@ -22,12 +22,12 @@ use std::collections::HashMap;
 
 // ─── Sabitler ─────────────────────────────────────────────────────────────────
 
-/// Nova Ana Ağ Chain ID
-pub const NOVA_MAINNET_CHAIN_ID: u64 = 42_001;
+/// Nova Ana Ağ Chain ID — NOVA-RED-SDK-001 düzeltmesi (42_001 → 1984)
+pub const NOVA_MAINNET_CHAIN_ID: u64 = 1984;
 /// Nova Testnet Chain ID
-pub const NOVA_TESTNET_CHAIN_ID: u64 = 42_002;
+pub const NOVA_TESTNET_CHAIN_ID: u64 = 19840;
 /// Nova Devnet Chain ID
-pub const NOVA_DEVNET_CHAIN_ID: u64 = 42_003;
+pub const NOVA_DEVNET_CHAIN_ID: u64 = 198400;
 
 // ─── NovaFork ─────────────────────────────────────────────────────────────────
 

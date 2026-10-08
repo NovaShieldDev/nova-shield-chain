@@ -150,7 +150,20 @@ impl ConstraintSynthesizer<Fr> for StakeCircuit {
         let vh_computed = mimc_sponge_r1cs(cs.clone(), &[validator_var])?;
         vh_computed.enforce_equal(&validator_hash_pub)?;
 
-        // ── Kısıt 5 (NOVA-RED-ZK-003): Merkle inclusion proof ────────────────
+        // ── Kısıt 5 (NOVA-RED-ZK-006): value >= stake_amount ─────────────────
+        // diff = value - stake_amount ≥ 0 (range check: diff ∈ [0, 2^128))
+        // Eğer value < stake_amount → diff sahanın modülüne yakın olur (≥ 2^128) → kısıt başarısız.
+        {
+            let diff = val_var.clone() - stake_amount_var.clone();
+            // Bit ayrıştırması: BLS12-381 Fr 254-bit — ilk 128 bit herhangi değer alabilir,
+            // 128. bit ve üzeri tümü 0 olmalı (diff < 2^128).
+            let diff_bits = diff.to_bits_le()?;
+            for bit in &diff_bits[128..] {
+                bit.enforce_equal(&Boolean::constant(false))?;
+            }
+        }
+
+        // ── Kısıt 6 (NOVA-RED-ZK-003): Merkle inclusion proof ────────────────
         {
             let path = self.merkle_path.unwrap_or_default();
             let domain_merkle_const = domain_merkle();

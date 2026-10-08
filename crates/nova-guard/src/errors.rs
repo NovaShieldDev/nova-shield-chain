@@ -44,4 +44,8 @@ pub enum GuardError {
 
     #[error("bakiye yetersiz: mevcut {available}, gerekli {required}")]
     InsufficientBalance { available: u64, required: u64 },
+
+    /// NOVA-RED-GUARD-006: Yetkisiz authority set güncellemesi
+    #[error("yetkisiz authority set güncellemesi: {caller} bu işlemi yapamaz")]
+    UnauthorizedAuthoritySetUpdate { caller: String },
 }

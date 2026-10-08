@@ -28,7 +28,9 @@ pub use rpc::{
 // ─── SDK Versiyonu ────────────────────────────────────────────────────────────
 
 pub const SDK_VERSION: &str = "0.1.0";
-pub const NOVA_CHAIN_ID: u64 = 42_001;
+/// Mainnet chain ID — nova-primitives::constants::MAINNET_CHAIN_ID ile senkron
+/// NOVA-RED-SDK-001: Önceki değer 42_001, whitepaper ve genesis'te tanımlanan gerçek değer 1984.
+pub const NOVA_CHAIN_ID: u64 = 1984;
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -251,6 +253,6 @@ mod tests {
     #[test]
     fn test_sdk_version() {
         assert_eq!(SDK_VERSION, "0.1.0");
-        assert_eq!(NOVA_CHAIN_ID, 42_001);
+        assert_eq!(NOVA_CHAIN_ID, 1984); // NOVA-RED-SDK-001: mainnet chain ID
     }
 }

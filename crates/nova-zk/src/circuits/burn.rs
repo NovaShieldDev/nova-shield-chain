@@ -90,7 +90,38 @@ pub struct BurnProof {
 }
 
 impl BurnProof {
+    /// Burn kanıtını doğrular.
+    ///
+    /// NOVA-RED-ZK-005: Statement alanları (nullifier, value, recipient) ile
+    /// `proof.public_inputs` arasında çapraz doğrulama yapılır.
+    /// Prover sahte statement ile geçerli kanıt sunamazsa geçemez.
     pub fn verify(&self) -> ZkResult<bool> {
+        use crate::errors::ZkError;
+
+        // ── Cross-validate: statement ↔ proof.public_inputs ──────────────────
+        if self.proof.public_inputs.len() != 3 {
+            return Err(ZkError::InvalidProof);
+        }
+
+        // Public input 0: nullifier
+        if self.proof.public_inputs[0] != self.statement.nullifier.0 {
+            return Err(ZkError::InvalidProof);
+        }
+
+        // Public input 1: value (u128 → 32 byte le)
+        let mut expected_value_bytes = [0u8; 32];
+        expected_value_bytes[..16].copy_from_slice(&self.statement.value.to_le_bytes());
+        if self.proof.public_inputs[1] != expected_value_bytes {
+            return Err(ZkError::InvalidProof);
+        }
+
+        // Public input 2: recipient_hash
+        let expected_recipient_hash =
+            crate::circuits::r1cs::compute_recipient_hash(&self.statement.recipient);
+        if self.proof.public_inputs[2] != expected_recipient_hash {
+            return Err(ZkError::InvalidProof);
+        }
+
         self.proof.verify_groth16()
     }
 }

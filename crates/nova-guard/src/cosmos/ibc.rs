@@ -204,10 +204,13 @@ impl IbcTransferMsg {
 /// IBC transfer modülü — Cosmos SDK `IBCModule` pattern
 pub struct IbcModule {
     channels: dashmap::DashMap<String, IbcChannel>,
-    /// Paket sıra numaraları (channel_id → sequence)
+    /// Gönderilen paket sıra numaraları (channel_id → next_send_sequence)
     sequences: dashmap::DashMap<String, u64>,
     /// Pending paketler
     pending_packets: parking_lot::Mutex<Vec<IbcPacket>>,
+    /// NOVA-RED-NETWORK-008: Alınan paket sıra numaraları (channel_id → next_expected_recv_seq).
+    /// Replay saldırısını önler: aynı sequence ile paket iki kez kabul edilemez.
+    recv_sequences: dashmap::DashMap<String, u64>,
 }
 
 impl IbcModule {
@@ -216,12 +219,14 @@ impl IbcModule {
             channels: dashmap::DashMap::new(),
             sequences: dashmap::DashMap::new(),
             pending_packets: parking_lot::Mutex::new(vec![]),
+            recv_sequences: dashmap::DashMap::new(),
         }
     }
 
     /// Kanal kaydet
     pub fn register_channel(&self, channel: IbcChannel) {
         self.sequences.entry(channel.channel_id.clone()).or_insert(0);
+        self.recv_sequences.entry(channel.channel_id.clone()).or_insert(0);
         self.channels.insert(channel.channel_id.clone(), channel);
     }
 
@@ -284,6 +289,52 @@ impl IbcModule {
         } else {
             false
         }
+    }
+
+    /// Gelen paketi işle — Cosmos SDK `RecvPacket`.
+    ///
+    /// NOVA-RED-NETWORK-008: Sıra numarası takibi ile replay saldırısını önler.
+    /// Aynı (channel, sequence) çifti yalnızca bir kez kabul edilir.
+    ///
+    /// # Hata
+    /// - `GuardError::IbcChannelNotFound` — kanal bilinmiyorsa
+    /// - `GuardError::InvalidTransaction` — sequence replay veya geçersizse
+    pub fn receive_packet(&self, packet: &IbcPacket) -> GuardResult<()> {
+        // Kanal var mı?
+        if !self.channels.contains_key(&packet.destination_channel) {
+            return Err(GuardError::IbcChannelNotFound {
+                channel_id: packet.destination_channel.clone(),
+            });
+        }
+
+        // NOVA-RED-NETWORK-008: Alınan sequence takibi
+        let mut next_seq = self.recv_sequences
+            .entry(packet.destination_channel.clone())
+            .or_insert(0);
+
+        if packet.sequence != *next_seq + 1 && packet.sequence <= *next_seq {
+            // Replay: zaten işlenmiş sequence
+            return Err(GuardError::InvalidTransaction {
+                reason: format!(
+                    "IBC replay saldırısı tespit edildi: channel={}, sequence={}, beklenen>{} ",
+                    packet.destination_channel, packet.sequence, *next_seq
+                ),
+            });
+        }
+
+        // Sequence güncelle (ordered channel: strictly sequential)
+        if packet.sequence == *next_seq + 1 {
+            *next_seq += 1;
+        } else if packet.sequence <= *next_seq {
+            return Err(GuardError::InvalidTransaction {
+                reason: format!(
+                    "IBC duplicate paket: sequence={} zaten işlendi",
+                    packet.sequence
+                ),
+            });
+        }
+
+        Ok(())
     }
 }
 
