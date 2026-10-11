@@ -1,5 +1,9 @@
 # Nova Shield Chain
 
+**Nova Shield DEX** — Native DEX built on this chain: [github.com/NovaShieldDev/nova-shield-dex](https://github.com/NovaShieldDev/nova-shield-dex)
+
+---
+
 Layer 1 blockchain written in Rust. Mainnet went live in October 2026 with five validators. Testnet has been running since early 2026 with three validators.
 
 Source is closed during this phase. This repository contains the whitepaper and technical documentation. Verified builds and audit results are available on request.
