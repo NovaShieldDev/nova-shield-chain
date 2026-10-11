@@ -578,7 +578,7 @@ The `nova-guardian` module allows an account holder to designate a set of truste
 
 The `nova-guard` crate implements two bridge protocols:
 
-**IBC (Cosmos/Tendermint)**: Implements the ICS-20 token transfer standard. The native token denomination is `unsc` (micro-NSC). Bridged tokens use the `DenomTrace` format: `ibc/{SHA256(path/baseDenom)[0:32 hex]}`. The escrow pattern locks tokens on the source chain and mints vouchers on the destination; unescrow burns vouchers and releases the locked tokens.
+**IBC (Cosmos/Tendermint)**: Implements the ICS-20 token transfer standard. The native token denomination is `unova` (micro-NOVA). Bridged tokens use the `DenomTrace` format: `ibc/{SHA256(path/baseDenom)[0:32 hex]}`. The escrow pattern locks tokens on the source chain and mints vouchers on the destination; unescrow burns vouchers and releases the locked tokens.
 
 **Ethereum BEEFY**: A light client implementation of Polkadot's BEEFY finality gadget for Ethereum-facing bridges. Validators submit `BeefyCommitment` structures containing the Nova chain's MMR root and validator set ID. `SignedCommitment` packages the commitment with validator signatures. The light client verifies commitments and maintains a bounded history (`MAX_COMMITMENTS = 256`).
 
@@ -717,8 +717,8 @@ Everything described in this paper is implemented and running. A 19MB production
 9. Penumbra Labs. (2022). *Penumbra: A Fully Private Proof-of-Stake Network.*
 10. Rocket, T., et al. (2019). *Scalable and Probabilistic Leaderless BFT Consensus through Metastability.*
 11. Stewart, A. (2020). *GRANDPA: a Byzantine Finality Gadget.*
-12. Grassi, L., et al. (2021). *Poseidon: A New Hash Function for Zero-Knowledge Proof Systems.*
-13. Al-Bassam, M., et al. (2018). *Fraud and Data Availability Proofs.*
+12. Albrecht, M., Grassi, L., Rechberger, C., Roy, A., Tiessen, T. (2016). *MiMC: Efficient Encryption and Cryptographic Hashing with Minimal Multiplicative Complexity.* ASIACRYPT 2016.
+13. Gelashvili, R., et al. (2022). *Block-STM: Scaling Blockchain Execution by Turning Ordering Curse to a Performance Blessing.*
 14. Castro, M., Liskov, B. (1999). *Practical Byzantine Fault Tolerance.*
 15. Perrin, T. (2018). *The Noise Protocol Framework.*
 16. Aumasson, J.P., et al. (2020). *BLAKE3 is not vulnerable to length extension.*
