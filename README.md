@@ -71,7 +71,7 @@ TGE circulating supply: 28,000,000 NOVA (14%).
 | Public Sale | 6.5% | 13,000,000 | Unlocked at TGE |
 | Community Presale | 2.5% | 5,000,000 | 2-month cliff + 12-month linear |
 
-**Community Presale** — 5,000,000 NOVA at $2.50/token. 15-day window only. 2-month cliff, then 1/12 released each month for 12 months. Date and registration will be announced via [@NovaShieldChainOfficial](https://x.com/NovaShieldChainOfficial).
+**Community Presale** — 5,000,000 NOVA at $2.50/token. 15-day window only. 2-month cliff, then 1/12 released each month for 12 months. Date and registration will be announced via official Nova Shield channels.
 
 Nova Shield Chain is not seeking external investment. The protocol is built, funded, and running.
 

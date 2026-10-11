@@ -637,7 +637,7 @@ After the staking reserve is exhausted, validators earn entirely from fee revenu
 | FDV at presale price | $500,000,000 |
 | Window | 15 days only |
 | Vesting | 2-month cliff, then 1/12 released each month for 12 months |
-| Announcement | Official date via [@NovaShieldChainOfficial](https://x.com/NovaShieldChainOfficial) |
+| Announcement | Via official Nova Shield channels |
 
 Nova Shield Chain is not seeking external investment. The protocol is built, funded, and running.
 
