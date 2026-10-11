@@ -604,7 +604,7 @@ Model:         Deflationary (50% of all fees permanently burned)
 | Ecosystem & Community | 22% | 44,000,000 | 48-month linear |
 | Team & Founders | 19% | 38,000,000 | 12-month cliff + 48-month linear |
 | Staking Rewards | 16% | 32,000,000 | 10-year halving schedule |
-| Future Investors (VC) | 15% | 30,000,000 | 12-month cliff + 24-month linear |
+| Strategic Reserve | 15% | 30,000,000 | 12-month cliff + 24-month linear |
 | Treasury | 12% | 24,000,000 | 6-month cliff + governance unlock |
 | Liquidity | 7.5% | 15,000,000 | Unlocked at TGE |
 | Public Sale | 6.5% | 13,000,000 | Unlocked at TGE |
@@ -613,7 +613,7 @@ Model:         Deflationary (50% of all fees permanently burned)
 
 **TGE circulating supply: 28,000,000 NOVA (14%)**
 
-VC investor allocation is capped at 15% across all institutional rounds. Community Presale allocation is separate and fixed at 2.5%.
+Community Presale allocation is fixed at 2.5% and cannot be increased.
 
 ### 11.3 Staking Rewards Schedule
 
@@ -639,7 +639,7 @@ After the staking reserve is exhausted, validators earn entirely from fee revenu
 | Vesting | 2-month cliff, then 1/12 released each month for 12 months |
 | Announcement | Official date via [@NovaShieldChainOfficial](https://x.com/NovaShieldChainOfficial) |
 
-Future VC rounds (targeting tier-1 funds) will be announced separately after public mainnet launch.
+Nova Shield Chain is not seeking external investment. The protocol is built, funded, and running.
 
 ### 11.5 Deflationary Mechanics
 
