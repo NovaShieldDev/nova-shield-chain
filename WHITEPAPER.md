@@ -6,11 +6,11 @@
 
 ## Abstract
 
-Nova Shield Chain is a Layer 1 blockchain built entirely in Rust, designed from the ground up to solve problems that existing blockchains have consistently failed to address: seed phrase theft, mempool front-running, protocol-level rug pulls, and the permanent loss of assets at death. Rather than layering these protections on top of an existing architecture, we built a new base layer where they are enforced by the protocol itself — not by applications, not by conventions, and not by trusting anyone.
+Nova Shield Chain is a Layer 1 blockchain written entirely in Rust. It addresses four problems that existing blockchains have not solved at the protocol level: seed phrase theft, mempool front-running, liquidity rug pulls, and permanent asset loss when a wallet holder dies. All four protections are enforced by the runtime itself, not by applications or conventions.
 
-The network achieves sub-second finality through a three-layer consensus combining BFT instant commitment, GRANDPA chain finalization, and Snowball fork resolution. All shielded value transfers are verified using real Groth16 zero-knowledge proofs over BLS12-381, the same curve used by Ethereum 2.0 consensus signatures. Transaction ordering MEV is neutralized through an encrypted mempool using Identity-Based Encryption over Ristretto255, combined with a CoW-protocol-derived batch auction that clears all orders at a single uniform price. Key custody is handled at the protocol layer through a FROST-style threshold MPC implementation where the private key is never assembled in one place — not during signing, not during storage, not ever.
+Consensus combines BFT per-block commitment, GRANDPA finalization, and Snowball fork resolution, achieving sub-second finality. Shielded transfers use Groth16 zero-knowledge proofs on BLS12-381, the same curve used in Ethereum 2.0 consensus. The mempool uses Identity-Based Encryption over Ristretto255 to hide transaction contents until each slot closes, combined with a batch auction that clears all orders at a single uniform price. Key custody operates at the protocol layer via FROST-based threshold MPC — the private key is never assembled anywhere, not during key generation, signing, or storage.
 
-The NOVA token has a fixed supply of 200 million units with no new issuance mechanism and a 50% fee burn that makes sustained network usage deflationary. The codebase spans twenty-three Rust crates, approximately 100,000 lines of production code, and passes 3,588 tests with zero failures.
+The NOVA token has a fixed supply of 200 million with no issuance mechanism and a 50% fee burn. The L1 codebase is twenty-one Rust crates, approximately 100,000 lines of production code, passing 3,588 tests with zero failures.
 
 ---
 
@@ -36,17 +36,17 @@ The NOVA token has a fixed supply of 200 million units with no new issuance mech
 
 ## 1. Introduction
 
-Public blockchains have delivered on their core promise. Permissionless access, censorship resistance, verifiable settlement — these work. What has not worked is the assumption that transparency and security are compatible at the base layer.
+Public blockchains work for what they were designed to do. Settlement is verifiable, access is permissionless, and censorship resistance is real. The gaps are structural.
 
-Every major blockchain exposes its mempool to the public. Validators, MEV bots, and well-funded searchers can observe every pending transaction and extract value from users before their transactions settle. Ethereum has Flashbots, Solana has Jito, but neither eliminates the problem — they redistribute it. The validator always has some advantage over the user.
+Every major blockchain broadcasts its mempool publicly. Validators, MEV bots, and searchers can read pending transactions and insert themselves ahead of users before settlement. Ethereum has Flashbots, Solana has Jito — neither eliminates front-running, they redistribute who benefits from it. The validator has a structural advantage over the user, and that advantage cannot be addressed within the existing architecture.
 
-Every major blockchain requires users to custody a seed phrase. Twelve or twenty-four words that, if lost, mean permanent unrecoverable loss. If stolen, mean instant total loss. This is not a user experience problem — it is a fundamental design flaw that no hardware wallet, no multisig wallet, and no custodian can fully solve because the underlying key still exists as a single secret somewhere.
+Key custody still depends on seed phrases. Twelve or twenty-four words — lose them and funds are gone permanently, get robbed and they're gone immediately. Hardware wallets reduce some theft surface but don't eliminate the underlying problem: a complete secret still exists somewhere on a device or piece of paper. Multisig distributes signing authority, but each participant still holds a separate private key. Custodians work until they don't.
 
-No major blockchain has a mechanism for what happens when a wallet holder dies. Assets are lost permanently. Billions of dollars in cryptocurrency are already irrecoverable because their holders are dead or incapacitated, with no protocol-level path to inheritance.
+When a wallet holder dies, assets are locked. There is no protocol-level recovery path. Billions of dollars in cryptocurrency are already permanently inaccessible because their owners are dead or incapacitated. No major blockchain has addressed this in the base layer.
 
-No major blockchain enforces liquidity lock at the protocol level. "Rug pull" is an accepted risk because the base layer has no mechanism to prevent a liquidity provider from withdrawing at any time. Applications can attempt workarounds, but they can be circumvented.
+Liquidity rug pulls remain an accepted risk because the base layer provides no mechanism to prevent them. Lock contracts are smart contracts — they can be paused, upgraded, or circumvented.
 
-Nova Shield Chain was built to address these specific failures. Not through application-layer conventions, not through social coordination, but through protocol-enforced cryptographic guarantees.
+Nova Shield Chain addresses each of these at the protocol layer. The mitigations are cryptographic guarantees enforced by the runtime, not conventions or application-layer workarounds.
 
 ---
 
@@ -54,29 +54,31 @@ Nova Shield Chain was built to address these specific failures. Not through appl
 
 ### 2.1 The Transparency Problem
 
-Every transaction on a public blockchain permanently records the sender, recipient, amount, and timestamp. For most financial activity, this level of disclosure is unacceptable. Enterprise treasury operations, institutional market-making, and ordinary personal finance all require confidentiality that transparent blockchains cannot provide.
+Every transaction on a public blockchain permanently records sender, recipient, amount, and timestamp. For most financial activity — enterprise treasury operations, institutional market-making, personal finance — this level of disclosure is unacceptable.
 
-The consequences are concrete. Front-running extracts value from users at the mempool layer. Address profiling enables targeted theft and social engineering. Competitive intelligence becomes trivially available to anyone running a block explorer query.
+The practical consequences are concrete. Front-running extracts value from users at the mempool layer before their transactions settle. Address profiling enables targeted theft and social engineering. Competitive intelligence is available to anyone with a block explorer query.
 
 ### 2.2 The Key Custody Problem
 
-Seed phrase-based key management is the single biggest source of permanent loss in the cryptocurrency ecosystem. A single point of failure — hardware damage, theft, death, coercion — results in total, irrecoverable loss. Existing solutions are partial: hardware wallets reduce theft risk but do not eliminate the seed phrase. Multisig wallets distribute signing authority but still require individual private keys at each participant. Custodians introduce counterparty risk.
+Seed phrase-based key management is the largest single source of permanent loss in the cryptocurrency ecosystem. One failure point — hardware damage, theft, death, coercion — means total, unrecoverable loss of all funds associated with that key.
 
-The correct solution is threshold cryptography at the protocol layer, where the secret is never assembled in one location under any circumstances. This is what Nova implements natively.
+Existing approaches each solve part of the problem. Hardware wallets reduce theft risk but the seed still exists somewhere. Multisig distributes authority but each participant holds a separate full private key. Custodians introduce counterparty risk and are subject to regulatory freezes.
+
+Threshold cryptography at the protocol layer — where the complete secret is never assembled in any single location under any circumstances — is the only complete answer. Nova implements this natively for every account.
 
 ### 2.3 The MEV Problem
 
-Miner/validator extractable value is not an edge case. In 2023, over $1.3 billion was extracted from Ethereum users through front-running, sandwich attacks, and transaction reordering. On Solana, Jito's tip infrastructure formalizes MEV extraction rather than eliminating it. The underlying cause is simple: if validators can see the contents of pending transactions, they will exploit that information.
+Miner/validator extractable value is not a fringe issue. In 2023, over $1.3 billion was extracted from Ethereum users through front-running, sandwich attacks, and transaction reordering. On Solana, Jito's tip infrastructure formalizes MEV extraction rather than eliminating it. The root cause is architectural: if validators can read the contents of pending transactions, some of them will exploit that access.
 
-Nova's encrypted mempool ensures that no party — not validators, not nodes, not searchers — can read transaction contents until the slot closes and decryption occurs. The batch auction then executes all orders at a single clearing price, eliminating the incentive for ordering manipulation.
+Nova's encrypted mempool ensures that no party — validators, nodes, or searchers — can read transaction contents until the slot closes and decryption runs. The batch auction executes all orders at a single clearing price, removing the incentive for ordering manipulation entirely.
 
 ### 2.4 The Inheritance Problem
 
-No existing Layer 1 blockchain has a native mechanism for asset inheritance. When a wallet holder dies, their assets are permanently locked unless the private key was explicitly shared beforehand — which itself creates theft risk. Nova implements a deadman switch at the protocol layer: if a wallet holder does not send a heartbeat signal within a configurable period, a grace period begins, followed by automatic staged transfer to designated beneficiaries. This is enforced by the runtime, not by a smart contract that can be paused or upgraded.
+No existing Layer 1 blockchain has a native mechanism for asset inheritance. When a wallet holder dies, their assets are permanently locked unless the private key was explicitly shared beforehand — which itself creates a theft surface. Nova implements a deadman switch at the runtime level: if no heartbeat is received within a configurable period, a warning phase begins, followed by a grace period during which the account holder can cancel, and then staged transfer to designated beneficiaries. The runtime enforces this. No application layer can pause or override it.
 
 ### 2.5 The Rug Pull Problem
 
-Decentralized exchange liquidity provision carries no guarantees. A project can launch a token, attract liquidity, and remove it entirely at any time. Protocol-level liquidity locking — where the runtime itself blocks remove_liquidity calls until a specified time — is the only reliable solution. Nova enforces this unconditionally.
+Decentralized exchange liquidity provision carries no protocol-level guarantees. A project can launch a token, attract liquidity, and withdraw it entirely at any time. Application-layer lock contracts can be paused, upgraded, or worked around. Nova enforces liquidity locks at the runtime level — the state machine itself blocks withdrawal calls until the specified expiry. There is no administrative override.
 
 ---
 
@@ -84,7 +86,7 @@ Decentralized exchange liquidity provision carries no guarantees. A project can 
 
 ### 3.1 Overview
 
-Nova Shield Chain is organized as twenty-three Rust crates. Twenty-one implement the Layer 1 protocol. Two implement the native decentralized exchange (documented separately). Each crate has a defined responsibility with explicit interface boundaries. This separation allows independent testing, benchmarking, and security auditing of each component.
+Nova Shield Chain's L1 protocol is organized as twenty-one Rust crates. The native DEX runs as a separate repository. Each crate has a defined responsibility with explicit interface boundaries, allowing independent testing, benchmarking, and security auditing of each component.
 
 The core execution stack:
 
@@ -306,9 +308,9 @@ Production key generation will follow the Powers of Tau multi-party ceremony pro
 
 ### 6.1 Design Rationale
 
-Every existing Layer 1 blockchain assigns one private key per account. That key is either stored on a device, written on paper as a seed phrase, or held by a custodian. All three have failure modes: device loss, phrase theft, custodian insolvency. The key exists as a complete secret somewhere, and wherever it exists, it can be lost or stolen.
+Every existing Layer 1 blockchain assigns one private key per account. That key is stored on a device, written as a seed phrase, or held by a custodian. All three have failure modes: device loss, phrase theft, custodian insolvency or seizure. In each case, the key exists as a complete secret at some location, and wherever it exists, it can be lost or stolen.
 
-Nova's account model distributes signing authority across multiple parties using threshold cryptography such that the complete private key is never assembled — not during key generation, not during signing, not during storage. A transaction is authorized when t-of-n guardians cooperate to produce a valid signature. Compromising fewer than t parties produces nothing useful.
+Nova's account model distributes signing authority across multiple parties using threshold cryptography. The complete private key is never assembled — not during key generation, not during signing, not in storage. A transaction is authorized when t-of-n guardians cooperate to produce a valid signature. Access to fewer than t parties yields nothing usable.
 
 ### 6.2 Protocol Overview
 
@@ -376,7 +378,7 @@ The `NetworkWorker` and `NetworkService` are separated following the Polkadot se
 
 Nova's mempool encryption uses **Identity-Based Encryption over the Ristretto255 group**. The epoch public key is computed jointly by the validator set at epoch boundaries. Transactions are encrypted under this key before broadcast. No single validator can decrypt a transaction before block production. At block time, the leader initiates cooperative decryption with validator quorum participation.
 
-This is not a cosmetic privacy feature. A mempool observer — whether a validator, a well-connected full node, or a searcher running an MEV bot — sees only ciphertext commitments. The transaction contents, sender addresses, and amounts are invisible until the slot closes. Front-running is physically impossible, not merely disincentivized.
+A mempool observer — whether a validator, a well-connected full node, or a searcher running an MEV bot — sees only ciphertext. Transaction contents, sender addresses, and amounts are hidden until the slot closes. Front-running requires reading a transaction before it executes. Encrypted transactions give nothing to read.
 
 The mempool pool maintains:
 - A `DashMap` for lock-free concurrent transaction storage
@@ -687,11 +689,9 @@ After the staking reserve is exhausted, validators earn entirely from fee revenu
 
 ## 13. Conclusion
 
-Nova Shield Chain delivers on a straightforward thesis: most of the critical failures in the cryptocurrency ecosystem — seed phrase loss, front-running, rug pulls, inheritance — are protocol-level problems that require protocol-level solutions. Applying application-layer workarounds to base-layer design flaws is not an engineering solution; it is a temporary patch that keeps the underlying vulnerability intact.
+The problems described in this paper share a common root. Seed phrase loss, front-running, rug pulls, and inheritance are all protocol-level failures that have been treated as application-layer problems. Workarounds built on top of a flawed base layer don't resolve the underlying flaw — they add complexity while leaving the vulnerability intact.
 
-The system described in this paper is not a proposal. It is built and running. A production binary, live validator networks, and a test suite of **3,588 tests with zero failures** across twenty-three modules are the evidence. Real Groth16 proofs for all shielded operations. Real FROST threshold signing where the private key is never assembled. Real protocol-enforced liquidity locks that the runtime itself blocks. Real inheritance automation that no application layer can pause.
-
-The cryptographic foundations — BLS12-381, Ristretto255, secp256k1, Noise XX, Dilithium — are not novel experiments. They are production-grade primitives used in Ethereum 2.0, Signal, and NIST post-quantum standards respectively. What is novel is their integration into a unified base layer designed around the specific failures that existing blockchains have consistently failed to fix.
+Everything described in this paper is implemented and running. A 19MB production binary operates on five mainnet validators. 3,588 tests verify zero defects across the full protocol stack. The cryptographic foundations — BLS12-381, Ristretto255, secp256k1, Noise XX, Dilithium — are the same primitives used in Ethereum 2.0, Signal, and the NIST post-quantum standards. What Nova adds is their integration into a single base layer built around the specific failures that existing blockchains have not addressed.
 
 ---
 
