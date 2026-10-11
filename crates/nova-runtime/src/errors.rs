@@ -116,6 +116,10 @@ pub enum RuntimeError {
     #[error("Blok zaten mühürlü")]
     BlockAlreadySealed,
 
+    /// NOVA-RED-RUNTIME-003: Gas limit aşıldı
+    #[error("Blok gas limiti aşıldı")]
+    BlockGasLimitExceeded,
+
     #[error("Blok henüz açık değil")]
     BlockNotOpen,
 

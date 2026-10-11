@@ -91,12 +91,17 @@ impl EpochManager {
     /// 1. Mevcut epoch'u tarihçeye ekle
     /// 2. Yeni epoch'u oluştur (seçim sonuçlarıyla)
     /// Return: epoch geçişi oldu mu? + eventler
+    ///
+    /// NOVA-RED-CONSENSUS-005: Önce read ile hızlı kontrol, ardından advance_epoch içinde
+    /// write lock ile atomik yeniden kontrol — çift geçiş önlenir.
     pub fn process_slot(
         &self,
         current_slot: SlotId,
         all_candidates: &[ValidatorInfo],
     ) -> (bool, Vec<ConsensusEvent>) {
         let mut events = Vec::new();
+
+        // Hızlı yol: read lock ile kontrol (çoğu slot geçiş yapmaz)
         let epoch_expired = {
             let epoch = self.current_epoch.read();
             epoch.is_expired(current_slot)
@@ -106,9 +111,17 @@ impl EpochManager {
             return (false, events);
         }
 
+        // advance_epoch içinde write lock altında yeniden kontrol yapılır
+        let result = self.advance_epoch(current_slot, all_candidates);
+        let (old_epoch_id, new_epoch_id, new_validators, actually_advanced) = result;
+
+        if !actually_advanced {
+            // Başka bir thread bu epoch'u zaten geçirdi
+            return (false, events);
+        }
+
         // Epoch geçişi
-        let (old_epoch_id, new_epoch_id, new_validators) =
-            self.advance_epoch(current_slot, all_candidates);
+        let (old_epoch_id, new_epoch_id, new_validators) = (old_epoch_id, new_epoch_id, new_validators);
 
         events.push(ConsensusEvent {
             slot: current_slot,
@@ -130,22 +143,34 @@ impl EpochManager {
         (true, events)
     }
 
-    /// Epoch geçişini zorla (process_slot ile de çağrılır).
+    /// Epoch geçişini zorla (process_slot ile çağrılır).
     ///
-    /// 1. Mevcut epoch → tarihçe
-    /// 2. Seçim yap (ElectionEngine)
-    /// 3. Yeni epoch oluştur
+    /// 1. Write lock altında is_expired yeniden kontrol (NOVA-RED-CONSENSUS-005)
+    /// 2. Mevcut epoch → tarihçe
+    /// 3. Seçim yap (ElectionEngine)
+    /// 4. Yeni epoch oluştur
+    ///
+    /// Return: (old_id, new_id, validators, actually_advanced)
+    /// actually_advanced=false → başka thread zaten geçirdi, caller görmezden gelmeli.
     fn advance_epoch(
         &self,
         current_slot: SlotId,
         all_candidates: &[ValidatorInfo],
-    ) -> (EpochId, EpochId, Vec<ValidatorId>) {
-        let old_epoch_id = {
-            let epoch = self.current_epoch.read();
-            epoch.epoch_id
+    ) -> (EpochId, EpochId, Vec<ValidatorId>, bool) {
+        // NOVA-RED-CONSENSUS-005: Write lock ile çift kontrol — pencere kapatılır.
+        let (old_epoch_id, old_epoch_clone) = {
+            let epoch = self.current_epoch.write();
+            // Read-lock serbest bırakıldıktan sonra başka thread geçiş yaptıysa, epoch artık
+            // expired değildir — hatalı çift geçiş önlenir.
+            if !epoch.is_expired(current_slot) {
+                return (epoch.epoch_id, epoch.epoch_id, vec![], false);
+            }
+            let id = epoch.epoch_id;
+            let clone = epoch.clone();
+            (id, clone)
         };
 
-        // Seçim yap
+        // Seçim yap (kilit dışında — pahalı işlem)
         let election = ElectionEngine::elect_active_set(all_candidates);
         let new_validators = election.winner_ids();
         let total_stake = Balance(election.score.total_stake);
@@ -153,15 +178,14 @@ impl EpochManager {
 
         // Eski epoch'u tarihçeye ekle
         {
-            let old_epoch = self.current_epoch.read().clone();
             let mut history = self.epoch_history.write();
             if history.len() >= self.max_history {
                 history.pop_front();
             }
-            history.push_back(old_epoch);
+            history.push_back(old_epoch_clone);
         }
 
-        // Yeni epoch oluştur
+        // Yeni epoch oluştur ve atomik olarak güncelle
         let new_epoch = EpochInfo {
             epoch_id: new_epoch_id,
             started_at_slot: current_slot,
@@ -173,7 +197,7 @@ impl EpochManager {
 
         *self.current_epoch.write() = new_epoch;
 
-        (old_epoch_id, new_epoch_id, new_validators)
+        (old_epoch_id, new_epoch_id, new_validators, true)
     }
 
     /// Blok üretildi — epoch istatistiklerini güncelle.

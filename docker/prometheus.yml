@@ -1,0 +1,44 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    network: nova-devnet
+
+# AŞAMA 11 Görev 78: Prometheus konfigürasyonu
+# TPS, blok süresi, peer sayısı, validator uptime
+
+rule_files:
+  - "alert_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  # ─── Nova Validator Nodes ───────────────────────────────────────────────
+  - job_name: "nova-validators"
+    static_configs:
+      - targets:
+          - "172.20.0.10:9615"
+          - "172.20.0.11:9615"
+          - "172.20.0.12:9615"
+          - "172.20.0.13:9615"
+          - "172.20.0.14:9615"
+        labels:
+          role: validator
+
+  # ─── Nova RPC Node ──────────────────────────────────────────────────────
+  - job_name: "nova-rpc"
+    static_configs:
+      - targets:
+          - "172.20.0.20:9615"
+        labels:
+          role: rpc
+
+  # ─── Prometheus kendisi ─────────────────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets:
+          - "localhost:9090"

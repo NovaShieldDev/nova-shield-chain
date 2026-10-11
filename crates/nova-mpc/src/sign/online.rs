@@ -234,11 +234,18 @@ pub fn verify_partial_signature(
 /// `s = ∑s_i mod n`
 ///
 /// Partial imza session ID'lerinin tümü aynı olmalı.
+/// NOVA-RED-MPC-002: `nonce_points`, `public_shares`, `public_key`, `msg_hash` eklendi.
+/// Her partial imza, aggregation öncesinde `verify_partial_signature()` ile doğrulanır.
+/// Geçersiz partial imzası olan parti `ProtocolAbort::culprits` listesine eklenir.
 pub fn aggregate_partial_signatures(
     partial_sigs: &[PartialSignature],
     combined_nonce: &[u8; 33],
     expected_session_id: &[u8; 32],
     signers: &[PartyIndex],
+    nonce_points: &[[u8; 33]],
+    public_shares: &[[u8; 33]],
+    public_key: &[u8; 33],
+    msg_hash: &[u8; 32],
 ) -> MpcResult<ThresholdSignature> {
     // İmzacı sayısı kontrolü
     if partial_sigs.len() != signers.len() {
@@ -246,6 +253,18 @@ pub fn aggregate_partial_signatures(
             expected: signers.len(),
             got: partial_sigs.len(),
         });
+    }
+
+    // nonce_points ve public_shares uzunluk uyumu
+    if !nonce_points.is_empty() && nonce_points.len() != signers.len() {
+        return Err(MpcError::InternalError(
+            "nonce_points uzunluğu signer sayısıyla uyuşmuyor".into(),
+        ));
+    }
+    if !public_shares.is_empty() && public_shares.len() != signers.len() {
+        return Err(MpcError::InternalError(
+            "public_shares uzunluğu signer sayısıyla uyuşmuyor".into(),
+        ));
     }
 
     // Her partial imzanın session ID'si eşleşmeli
@@ -268,6 +287,42 @@ pub fn aggregate_partial_signatures(
             return Err(MpcError::ProtocolAbort {
                 culprits: vec![],
                 reason: "partial imzacı indeksleri beklenen signer listesiyle uyuşmuyor".into(),
+            });
+        }
+    }
+
+    // NOVA-RED-MPC-002: nonce_points ve public_shares mevcutsa her partial imzayı doğrula
+    if !nonce_points.is_empty() && !public_shares.is_empty() {
+        // party_index → (nonce_point, public_share) haritası oluştur
+        let index_map: std::collections::HashMap<u32, usize> = signers
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.0, i))
+            .collect();
+
+        let mut culprits: Vec<u32> = Vec::new();
+        for ps in partial_sigs {
+            if let Some(&pos) = index_map.get(&ps.party_index.0) {
+                let nonce_pt = &nonce_points[pos];
+                let pub_share = &public_shares[pos];
+                let valid = verify_partial_signature(
+                    ps,
+                    nonce_pt,
+                    pub_share,
+                    combined_nonce,
+                    public_key,
+                    msg_hash,
+                    signers,
+                )?;
+                if !valid {
+                    culprits.push(ps.party_index.0);
+                }
+            }
+        }
+        if !culprits.is_empty() {
+            return Err(MpcError::ProtocolAbort {
+                culprits,
+                reason: "geçersiz partial imza(lar) tespit edildi".into(),
             });
         }
     }
@@ -533,15 +588,23 @@ mod tests {
         // Aggregate
         let combined_nonce = presign_states[0].combined_nonce;
         let session_id = presign_states[0].session_id;
+        let public_key = local_keys[0].public_key;
+        let nonce_points = presign_states[0].nonce_points.clone();
+        let public_shares: Vec<[u8; 33]> = signers.iter()
+            .map(|p| local_keys[(p.0 - 1) as usize].compute_public_share(*p).unwrap())
+            .collect();
         let sig = aggregate_partial_signatures(
             &partial_sigs,
             &combined_nonce,
             &session_id,
             &signers,
+            &nonce_points,
+            &public_shares,
+            &public_key,
+            &msg_hash,
         ).unwrap();
 
         // Doğrulama
-        let public_key = local_keys[0].public_key;
         let valid = verify_threshold_signature(&sig, &public_key, &msg_hash).unwrap();
         assert!(valid, "threshold Schnorr imzası doğrulanmalı");
 
@@ -570,14 +633,22 @@ mod tests {
 
         let combined_nonce = presign_states[0].combined_nonce;
         let session_id = presign_states[0].session_id;
+        let public_key = local_keys[0].public_key;
+        let nonce_points = presign_states[0].nonce_points.clone();
+        let public_shares: Vec<[u8; 33]> = signers.iter()
+            .map(|p| local_keys[(p.0 - 1) as usize].compute_public_share(*p).unwrap())
+            .collect();
         let sig = aggregate_partial_signatures(
             &partial_sigs,
             &combined_nonce,
             &session_id,
             &signers,
+            &nonce_points,
+            &public_shares,
+            &public_key,
+            &msg_hash,
         ).unwrap();
 
-        let public_key = local_keys[0].public_key;
         let valid = verify_threshold_signature(&sig, &public_key, &msg_hash).unwrap();
         assert!(valid, "3/5 threshold Schnorr imzası doğrulanmalı");
     }
@@ -595,11 +666,16 @@ mod tests {
         let partials_a: Vec<_> = states_a.iter().enumerate()
             .map(|(i, ps)| create_partial_signature(ps, &local_keys[i], &msg_hash).unwrap())
             .collect();
+        let pk = local_keys[0].public_key;
+        let nonce_points_a = states_a[0].nonce_points.clone();
+        let public_shares_a: Vec<[u8; 33]> = signers_a.iter()
+            .map(|p| local_keys[(p.0 - 1) as usize].compute_public_share(*p).unwrap())
+            .collect();
         let sig_a = aggregate_partial_signatures(
-            &partials_a, &states_a[0].combined_nonce, &states_a[0].session_id, &signers_a
+            &partials_a, &states_a[0].combined_nonce, &states_a[0].session_id, &signers_a,
+            &nonce_points_a, &public_shares_a, &pk, &msg_hash,
         ).unwrap();
 
-        let pk = local_keys[0].public_key;
         assert!(verify_threshold_signature(&sig_a, &pk, &msg_hash).unwrap());
     }
 
@@ -631,7 +707,8 @@ mod tests {
 
         // Farklı session ID ile karışık sig → session mismatch veya invalid sig
         let result = aggregate_partial_signatures(
-            &partial_mixed, &combined_nonce_a, &session_id_a, &signers
+            &partial_mixed, &combined_nonce_a, &session_id_a, &signers,
+            &[], &[], &local_keys[0].public_key, &msg_hash,
         );
 
         match result {

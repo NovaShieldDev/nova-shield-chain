@@ -206,6 +206,7 @@ impl MevProtectedMempool {
             intent.zero_for_one,
             intent.amount_in,
             intent.min_amount_out,
+            now_ms,
         )?;
 
         tracing::info!(

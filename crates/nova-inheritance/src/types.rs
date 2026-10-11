@@ -499,6 +499,12 @@ pub struct InheritancePlan {
     pub release_steps: Vec<StagedReleaseStep>,
     /// Koşullu kurallar (§5.4.7).
     pub conditions: Vec<ConditionalRule>,
+    /// Yetkili guardian'lar (guardian_id listesi).
+    ///
+    /// NOVA-RED-INH-002: Yalnızca bu listede yer alan guardian_id'ler
+    /// `ApproveManualActivation` gönderebilir.
+    #[serde(default)]
+    pub guardian_ids: Vec<u64>,
     /// Plan oluşturulduğu slot.
     pub created_at_slot: SlotId,
     /// Son güncelleme slot'u.
@@ -633,6 +639,10 @@ pub struct InheritanceState {
     pub guardian_extension_count: u8,
     /// Manuel aktivasyon onayları (guardian_id listesi).
     pub manual_activation_approvals: Vec<u64>,
+    /// NOVA-RED-INH-005: Kullanıcı kendi imzasıyla manuel aktivasyonu tetikledi mi?
+    /// ManualActivation trigger'ı için zorunlu kullanıcı imzası kanıtı.
+    #[serde(default)]
+    pub user_manual_activation_requested: bool,
     /// Varis onayları (heir_address → onay_slot).
     pub heir_acknowledgements: Vec<(Address, SlotId)>,
     /// Multi-sig koşulu için varis onayları.
@@ -661,6 +671,7 @@ impl InheritanceState {
             duress_detected: false,
             guardian_extension_count: 0,
             manual_activation_approvals: Vec::new(),
+            user_manual_activation_requested: false,
             heir_acknowledgements: Vec::new(),
             multisig_approvals: Vec::new(),
             release_started_at: None,

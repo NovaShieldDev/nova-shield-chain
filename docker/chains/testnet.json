@@ -1,0 +1,36 @@
+{
+  "chain_id": 19840,
+  "chain_name": "Nova Shield Testnet",
+  "genesis_time": "2027-01-01T00:00:00Z",
+  "genesis_slot": 0,
+  "slot_duration_ms": 400,
+  "token": {
+    "symbol": "tNSC",
+    "decimals": 18,
+    "total_supply": "1000000000000000000000000000",
+    "existential_deposit": "100000000000000000000"
+  },
+  "consensus": {
+    "algorithm": "BFT",
+    "max_validators": 200,
+    "quorum_threshold_bps": 6667,
+    "era_duration_slots": 216000,
+    "session_duration_slots": 2400,
+    "unbonding_duration_slots": 4536000
+  },
+  "network": {
+    "p2p_port": 30333,
+    "rpc_port": 9944,
+    "metrics_port": 9615,
+    "max_peers": 50,
+    "boot_nodes": []
+  },
+  "protocol_params": {
+    "max_block_gas": 30000000,
+    "base_fee_per_gas": "1000000000",
+    "min_gas_price": "1000000000",
+    "block_reward_per_era": "4566210045662100456621",
+    "treasury_address": "0x4747474747474747474747474747474747474747",
+    "governance_address": "0x4747474747474747474747474747474747474747"
+  }
+}

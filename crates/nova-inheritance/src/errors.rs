@@ -155,6 +155,10 @@ pub enum InheritanceError {
     /// İç hata (bug göstergesi).
     #[error("iç hata: {0}")]
     InternalError(String),
+
+    /// NOVA-RED-INHERIT-002/004: Yetkisiz erişim
+    #[error("yetkisiz erişim: bu işlem için yetki yok")]
+    Unauthorized,
 }
 
 /// Inheritance sonuç tipi.

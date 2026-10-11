@@ -315,6 +315,9 @@ pub struct IbcTransferModule {
     denom_traces: BTreeMap<String, DenomTrace>,
     /// PacketCommitment: gönderilen paketlerin hash'i (kaybolma tespiti)
     packet_commitments: BTreeMap<(String, u64), [u8; 32]>,
+    /// NOVA-RED-NETWORK-008: Alınan paket sequence'ları (channel → Set<sequence>)
+    /// Tekrar gönderilen (replay) paketleri engeller.
+    received_sequences: BTreeMap<String, std::collections::HashSet<u64>>,
 }
 
 impl IbcTransferModule {
@@ -325,6 +328,7 @@ impl IbcTransferModule {
             minter: VoucherMinter::new(),
             denom_traces: BTreeMap::new(),
             packet_commitments: BTreeMap::new(),
+            received_sequences: BTreeMap::new(),
         }
     }
 
@@ -399,8 +403,17 @@ impl IbcTransferModule {
     pub fn on_recv_packet(
         &mut self,
         channel_id: &str,
+        sequence: u64,
         packet: &FungibleTokenPacket,
     ) -> Result<(), BridgeError> {
+        // NOVA-RED-NETWORK-008: Sequence numarası replay koruması
+        let seqs = self.received_sequences.entry(channel_id.to_string()).or_default();
+        if !seqs.insert(sequence) {
+            return Err(BridgeError::ChannelNotFound(format!(
+                "paket tekrar alındı: channel={channel_id}, sequence={sequence}"
+            )));
+        }
+
         let channel = self.channels.get(channel_id)
             .ok_or(BridgeError::ChannelNotFound(channel_id.into()))?;
 
@@ -535,7 +548,7 @@ mod tests {
             "cosmos1alice",
             "nova1bob",
         );
-        module.on_recv_packet("channel-0", &packet).unwrap();
+        module.on_recv_packet("channel-0", 1, &packet).unwrap();
 
         // Voucher oluşturulmalı
         let trace = DenomTrace::new("transfer/channel-0", "uatom");
@@ -571,7 +584,7 @@ mod tests {
 
         // Geri dön (prefix yok = nova token dönüyor)
         let packet = FungibleTokenPacket::new("unsc", 500_000, "cosmos1alice", "nova1bob");
-        module.on_recv_packet("channel-0", &packet).unwrap();
+        module.on_recv_packet("channel-0", 1, &packet).unwrap();
 
         assert_eq!(module.escrow_balance("channel-0", "unsc"), 500_000);
     }
@@ -591,7 +604,7 @@ mod tests {
         module.escrows.entry("channel-0".to_string()).or_default().lock("unsc", 100).unwrap();
 
         let packet = FungibleTokenPacket::new("unsc", 200, "alice", "bob");
-        let result = module.on_recv_packet("channel-0", &packet);
+        let result = module.on_recv_packet("channel-0", 1, &packet);
         assert!(matches!(result, Err(BridgeError::InsufficientEscrowBalance { .. })));
     }
 

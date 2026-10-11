@@ -1,0 +1,28 @@
+# Rust build artifacts (sadece release binary lazım)
+target/debug
+target/.rustc_info.json
+target/package
+target/doc
+target/tmp
+target/criterion
+target/nextest
+
+# Research/external repos (çok büyük)
+research/
+
+# Git history
+.git/
+
+# Test/bench artifacts
+*.profraw
+*.profdata
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temp files
+*.tmp
+*.log

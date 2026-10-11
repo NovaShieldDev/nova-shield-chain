@@ -1,0 +1,326 @@
+{
+  "_comment": "Nova Shield Chain — Mainnet Genesis Configuration",
+  "_version": "1.0.0",
+  "_generated": "2026-10-06",
+
+  "chain_id": 1984,
+  "chain_name": "Nova Shield Chain",
+  "chain_short": "nova-mainnet",
+  "genesis_time": "2027-04-01T12:00:00Z",
+  "genesis_slot": 0,
+  "slot_duration_ms": 400,
+
+  "token": {
+    "name": "Nova",
+    "symbol": "NOVA",
+    "decimals": 18,
+    "total_supply": "200000000000000000000000000",
+    "total_supply_human": "200,000,000 NOVA",
+    "model": "deflationary",
+    "fee_burn_bps": 5000,
+    "existential_deposit": "100000000000000000"
+  },
+
+  "consensus": {
+    "algorithm": "BFT",
+    "max_validators": 1000,
+    "min_validators": 4,
+    "quorum_threshold_bps": 6667,
+    "era_duration_slots": 216000,
+    "session_duration_slots": 2400,
+    "unbonding_duration_slots": 4536000,
+    "min_validator_stake": "100000000000000000000000",
+    "min_validator_stake_human": "100,000 NOVA",
+    "max_validator_stake": "10000000000000000000000000",
+    "slashing": {
+      "equivocation_bps": 500,
+      "unavailability_bps": 100,
+      "double_vote_bps": 1000
+    }
+  },
+
+  "network": {
+    "p2p_port": 30333,
+    "rpc_port": 9944,
+    "metrics_port": 9615,
+    "max_peers": 50,
+    "boot_nodes": [
+      "_BOOTNODE_1_",
+      "_BOOTNODE_2_",
+      "_BOOTNODE_3_"
+    ]
+  },
+
+  "protocol_params": {
+    "max_block_gas": 30000000,
+    "base_fee_per_gas": "1000000000",
+    "min_gas_price": "1000000000",
+    "max_tx_per_block": 10000,
+    "block_reward_per_era": "0",
+    "treasury_address": "_TREASURY_ADDRESS_",
+    "governance_address": "_GOVERNANCE_ADDRESS_",
+    "ecosystem_address": "_ECOSYSTEM_ADDRESS_",
+    "liquidity_address": "_LIQUIDITY_ADDRESS_",
+    "public_sale_address": "_PUBLIC_SALE_ADDRESS_"
+  },
+
+  "tokenomics": {
+    "_comment": "Total: 200,000,000 NOVA — Fixed forever, no new issuance",
+    "_tge_circulating": "28000000000000000000000000",
+    "_tge_circulating_human": "28,000,000 NOVA (14%)",
+
+    "allocations": [
+      {
+        "category": "ecosystem_community",
+        "percent": 22,
+        "amount": "44000000000000000000000000",
+        "amount_human": "44,000,000 NOVA",
+        "vesting": {
+          "type": "linear",
+          "cliff_months": 0,
+          "duration_months": 48,
+          "tge_unlock_bps": 0
+        },
+        "address": "_ECOSYSTEM_ADDRESS_",
+        "description": "Community grants, developer ecosystem, partnerships"
+      },
+      {
+        "category": "team_founders",
+        "percent": 19,
+        "amount": "38000000000000000000000000",
+        "amount_human": "38,000,000 NOVA",
+        "vesting": {
+          "type": "cliff_linear",
+          "cliff_months": 12,
+          "duration_months": 48,
+          "tge_unlock_bps": 0
+        },
+        "address": "_TEAM_ADDRESS_",
+        "description": "Core team and founders — 12m cliff, then 4-year linear"
+      },
+      {
+        "category": "investors",
+        "percent": 17,
+        "amount": "34000000000000000000000000",
+        "amount_human": "34,000,000 NOVA",
+        "vesting": {
+          "type": "cliff_linear",
+          "cliff_months": 12,
+          "duration_months": 24,
+          "tge_unlock_bps": 0,
+          "_note": "Permanently capped at 17% across all rounds"
+        },
+        "rounds": [
+          {
+            "round": "seed",
+            "percent": 10,
+            "amount": "20000000000000000000000000",
+            "amount_human": "20,000,000 NOVA",
+            "price_usd": "1.00",
+            "raise_usd": "20000000",
+            "fdv_usd": "200000000",
+            "address": "_SEED_INVESTORS_ADDRESS_"
+          },
+          {
+            "round": "series_a",
+            "percent": 7,
+            "amount": "14000000000000000000000000",
+            "amount_human": "14,000,000 NOVA",
+            "price_usd": "2.14",
+            "raise_usd": "30000000",
+            "fdv_usd": "428000000",
+            "address": "_SERIES_A_ADDRESS_"
+          }
+        ],
+        "address": "_INVESTORS_VESTING_ADDRESS_"
+      },
+      {
+        "category": "staking_rewards",
+        "percent": 16,
+        "amount": "32000000000000000000000000",
+        "amount_human": "32,000,000 NOVA",
+        "vesting": {
+          "type": "halving_schedule",
+          "schedule": [
+            { "years": "1-2",  "apy_bps": 800, "annual_nova": "5120000000000000000000000" },
+            { "years": "3-4",  "apy_bps": 400, "annual_nova": "2560000000000000000000000" },
+            { "years": "5-6",  "apy_bps": 200, "annual_nova": "1280000000000000000000000" },
+            { "years": "7-10", "apy_bps": 100, "annual_nova": "640000000000000000000000"  }
+          ],
+          "_note": "After exhaustion validators compensated by fee revenue only"
+        },
+        "address": "_STAKING_REWARDS_ADDRESS_"
+      },
+      {
+        "category": "treasury",
+        "percent": 12,
+        "amount": "24000000000000000000000000",
+        "amount_human": "24,000,000 NOVA",
+        "vesting": {
+          "type": "cliff_governance",
+          "cliff_months": 6,
+          "unlock": "governance_vote",
+          "tge_unlock_bps": 0
+        },
+        "address": "_TREASURY_ADDRESS_",
+        "description": "Protocol development, security audits, operations"
+      },
+      {
+        "category": "public_sale",
+        "percent": 7,
+        "amount": "14000000000000000000000000",
+        "amount_human": "14,000,000 NOVA",
+        "vesting": {
+          "type": "none",
+          "tge_unlock_bps": 10000,
+          "_note": "Fully unlocked at TGE — part of 28M TGE circulating"
+        },
+        "address": "_PUBLIC_SALE_ADDRESS_"
+      },
+      {
+        "category": "liquidity",
+        "percent": 7,
+        "amount": "14000000000000000000000000",
+        "amount_human": "14,000,000 NOVA",
+        "vesting": {
+          "type": "none",
+          "tge_unlock_bps": 10000,
+          "_note": "Fully unlocked at TGE — DEX/CEX liquidity provision"
+        },
+        "address": "_LIQUIDITY_ADDRESS_"
+      }
+    ]
+  },
+
+  "genesis_validators": [
+    {
+      "_comment": "Genesis validator slots — filled during mainnet ceremony",
+      "id": 1,
+      "address": "_VALIDATOR_1_ADDRESS_",
+      "bls_pubkey": "_VALIDATOR_1_BLS_PUBKEY_",
+      "p2p_key": "_VALIDATOR_1_P2P_KEY_",
+      "stake": "1000000000000000000000000",
+      "commission_bps": 500,
+      "endpoint": "_VALIDATOR_1_ENDPOINT_"
+    },
+    {
+      "id": 2,
+      "address": "_VALIDATOR_2_ADDRESS_",
+      "bls_pubkey": "_VALIDATOR_2_BLS_PUBKEY_",
+      "p2p_key": "_VALIDATOR_2_P2P_KEY_",
+      "stake": "1000000000000000000000000",
+      "commission_bps": 500,
+      "endpoint": "_VALIDATOR_2_ENDPOINT_"
+    },
+    {
+      "id": 3,
+      "address": "_VALIDATOR_3_ADDRESS_",
+      "bls_pubkey": "_VALIDATOR_3_BLS_PUBKEY_",
+      "p2p_key": "_VALIDATOR_3_P2P_KEY_",
+      "stake": "1000000000000000000000000",
+      "commission_bps": 500,
+      "endpoint": "_VALIDATOR_3_ENDPOINT_"
+    },
+    {
+      "id": 4,
+      "address": "_VALIDATOR_4_ADDRESS_",
+      "bls_pubkey": "_VALIDATOR_4_BLS_PUBKEY_",
+      "p2p_key": "_VALIDATOR_4_P2P_KEY_",
+      "stake": "1000000000000000000000000",
+      "commission_bps": 500,
+      "endpoint": "_VALIDATOR_4_ENDPOINT_"
+    },
+    {
+      "id": 5,
+      "address": "_VALIDATOR_5_ADDRESS_",
+      "bls_pubkey": "_VALIDATOR_5_BLS_PUBKEY_",
+      "p2p_key": "_VALIDATOR_5_P2P_KEY_",
+      "stake": "1000000000000000000000000",
+      "commission_bps": 500,
+      "endpoint": "_VALIDATOR_5_ENDPOINT_"
+    }
+  ],
+
+  "balances": [
+    {
+      "address": "_ECOSYSTEM_ADDRESS_",
+      "balance": "44000000000000000000000000",
+      "category": "ecosystem_community",
+      "locked": true
+    },
+    {
+      "address": "_TEAM_ADDRESS_",
+      "balance": "38000000000000000000000000",
+      "category": "team_founders",
+      "locked": true
+    },
+    {
+      "address": "_INVESTORS_VESTING_ADDRESS_",
+      "balance": "34000000000000000000000000",
+      "category": "investors",
+      "locked": true
+    },
+    {
+      "address": "_STAKING_REWARDS_ADDRESS_",
+      "balance": "32000000000000000000000000",
+      "category": "staking_rewards",
+      "locked": true
+    },
+    {
+      "address": "_TREASURY_ADDRESS_",
+      "balance": "24000000000000000000000000",
+      "category": "treasury",
+      "locked": true
+    },
+    {
+      "address": "_PUBLIC_SALE_ADDRESS_",
+      "balance": "14000000000000000000000000",
+      "category": "public_sale",
+      "locked": false
+    },
+    {
+      "address": "_LIQUIDITY_ADDRESS_",
+      "balance": "14000000000000000000000000",
+      "category": "liquidity",
+      "locked": false
+    }
+  ],
+
+  "mpc": {
+    "scheme": "FROST",
+    "threshold": 3,
+    "total_parties": 5,
+    "keypers": [
+      "_KEYPER_1_ADDRESS_",
+      "_KEYPER_2_ADDRESS_",
+      "_KEYPER_3_ADDRESS_",
+      "_KEYPER_4_ADDRESS_",
+      "_KEYPER_5_ADDRESS_"
+    ]
+  },
+
+  "guardian_set": {
+    "initial_guardians": [],
+    "min_stake": "1000000000000000000000",
+    "min_stake_human": "1,000 NOVA"
+  },
+
+  "governance": {
+    "address": "_GOVERNANCE_ADDRESS_",
+    "min_deposit": "10000000000000000000000",
+    "min_deposit_human": "10,000 NOVA",
+    "voting_period_slots": 216000,
+    "voting_period_human": "~24 hours",
+    "quorum_bps": 3300,
+    "pass_threshold_bps": 6667,
+    "veto_threshold_bps": 3300
+  },
+
+  "zk": {
+    "scheme": "Groth16",
+    "curve": "BLS12-381",
+    "proof_size_bytes": 192,
+    "circuits": ["mint", "transfer", "burn", "spend"],
+    "semi_shield_mode": true
+  }
+}

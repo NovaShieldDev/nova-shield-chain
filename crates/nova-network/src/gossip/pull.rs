@@ -102,6 +102,9 @@ impl CrdsGossipPull {
 
     /// Pull yanıtını işle — yerel CRDS'e yeni değerleri ekle
     /// Solana: `process_pull_response(crds, from, now, values)` → usize (yeni sayısı)
+    ///
+    /// NOVA-RED-NETWORK-006: Gelen CrdsValue'lar imza doğrulamasından geçirilir.
+    /// Sahte veya bozuk imzalı değerler CRDS'e eklenmez.
     pub fn process_pull_response(
         &self,
         local_crds: &mut CrdsTable,
@@ -109,6 +112,10 @@ impl CrdsGossipPull {
     ) -> usize {
         let mut added = 0usize;
         for value in &response.values {
+            // NOVA-RED-NETWORK-006: İmza doğrulaması — sahte mesaj yayılımı engellenir
+            if !value.verify() {
+                continue;
+            }
             if local_crds.insert(value.clone()) {
                 added += 1;
             }
@@ -143,11 +150,13 @@ mod tests {
     }
 
     fn contact(n: u8) -> CrdsValue {
-        CrdsValue::new(CrdsData::ContactInfo {
+        // NOVA-RED-NETWORK-006: process_pull_response artık imza doğrulaması yapıyor
+        // → test değerleri sign() ile oluşturulmalı
+        CrdsValue::sign(CrdsData::ContactInfo {
             node_id: node(n),
             addr: format!("127.0.0.{n}:30333"),
             wallclock: 1000,
-        })
+        }, &[n; 32])
     }
 
     #[test]

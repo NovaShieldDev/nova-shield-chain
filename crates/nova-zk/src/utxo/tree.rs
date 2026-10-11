@@ -4,8 +4,8 @@
 //!
 //! Zcash Sapling "Incremental Merkle Tree" ve Penumbra TCT'den ilham alır:
 //! - Ekleme sırası korunur (UTXO tarihi için gerekli)
-//! - İkili Merkle ağacı: yaprak = `BLAKE3("nova-zk-leaf:" || cm)`, iç düğüm = `BLAKE3("nova-zk-node:" || sol || sağ)`
-//! - Domain separator → ikinci önceden görüntü saldırısına karşı koruma
+//! - İkili Merkle ağacı: yaprak = `cm.0`, iç düğüm = `mimc_merkle_hash(left, right)` (MiMC sponge)
+//! - NOVA-RED-ZK-008/010: ZK devreleriyle (SpendCircuit/StakeCircuit) hash tutarlılığı sağlanır
 //! - `MerkleWitness`: tam auth path ile inclusion kanıtı (ZK proof içinde doğrulanabilir)
 //!
 //! ## MerkleWitness
@@ -19,6 +19,7 @@
 //! - Penumbra `tct::Tree` — Tiered Commitment Tree
 //! - Bitcoin `ComputeMerkleRoot` — tek öğe çiftleme pattern
 
+use crate::circuits::mimc::mimc_merkle_hash;
 use crate::errors::{ZkError, ZkResult};
 use crate::utxo::note::NoteCommitment;
 use parking_lot::RwLock;
@@ -76,25 +77,22 @@ impl MerkleWitness {
 
 // ─── Merkle yardımcı fonksiyonlar ─────────────────────────────────────────────
 
-/// Commitment için Merkle yaprak hash'i
+/// Commitment için Merkle yaprak.
 ///
-/// `BLAKE3("nova-zk-merkle-leaf:" || commitment[32])`
+/// NOVA-RED-ZK-008/010: SpendCircuit/StakeCircuit/UnstakeCircuit R1CS devreleri
+/// MiMC sponge (`mimc_merkle_hash`) kullanır. CommitmentTree'nin root() değerinin
+/// ZK devre anchor'ıyla eşleşmesi için yaprak = `cm.0` (commitment bytes),
+/// iç düğüm = `mimc_merkle_hash(left, right)`.
 pub fn merkle_leaf_hash(cm: &NoteCommitment) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(b"nova-zk-merkle-leaf:");
-    h.update(cm.as_bytes());
-    *h.finalize().as_bytes()
+    cm.0
 }
 
-/// İkili Merkle iç düğüm hash'i
+/// İkili Merkle iç düğüm hash'i — MiMC sponge (ZK devreyle tutarlı).
 ///
-/// `BLAKE3("nova-zk-merkle-node:" || left[32] || right[32])`
+/// NOVA-RED-ZK-008/010: `mimc_merkle_hash` = `mimc_sponge([domain_merkle, left_fr, right_fr])`
+/// SpendCircuit R1CS'de kullanılan hash fonksiyonuyla birebir eşleşir.
 pub fn merkle_node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(b"nova-zk-merkle-node:");
-    h.update(left);
-    h.update(right);
-    *h.finalize().as_bytes()
+    mimc_merkle_hash(left, right)
 }
 
 /// Yaprak listesinden tüm Merkle seviyelerini inşa et.

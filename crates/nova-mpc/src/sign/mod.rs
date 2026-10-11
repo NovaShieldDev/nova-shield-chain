@@ -201,10 +201,16 @@ impl SigningSession {
     }
 
     /// İmzayı finalleştir.
+    ///
+    /// NOVA-RED-MPC-002: `nonce_points` ve `public_shares` eklendi — aggregate öncesi
+    /// her partial imza `verify_partial_signature()` ile doğrulanır.
+    /// Boş dilim geçilirse doğrulama atlanır (geriye dönük uyumluluk).
     pub fn finalize(
         &self,
         combined_nonce: &[u8; 33],
         public_key: &[u8; 33],
+        nonce_points: &[[u8; 33]],
+        public_shares: &[[u8; 33]],
     ) -> MpcResult<SignOutput> {
         if !self.is_ready() {
             return Err(crate::errors::MpcError::InsufficientShares {
@@ -218,6 +224,10 @@ impl SigningSession {
             combined_nonce,
             &self.session_id,
             &self.signers,
+            nonce_points,
+            public_shares,
+            public_key,
+            &self.message_hash,
         )?;
 
         // NOVA-RED-MPC-002: Aggregasyon sonrası imzayı doğrula.

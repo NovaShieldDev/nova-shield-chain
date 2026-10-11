@@ -1,0 +1,314 @@
+version: "3.8"
+
+# Nova Shield Chain Devnet — 5 Validator + 1 RPC Node
+# AŞAMA 11 Görev 76
+#
+# Başlatmak için:
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# Durdurmak için:
+#   docker compose -f docker/docker-compose.yml down -v
+
+networks:
+  nova-devnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  validator1-data:
+  validator2-data:
+  validator3-data:
+  validator4-data:
+  validator5-data:
+  rpc-data:
+  prometheus-data:
+  grafana-data:
+
+x-validator-common: &validator-common
+  image: nova-shield-chain:devnet
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  restart: unless-stopped
+  environment:
+    - RUST_LOG=info,nova_consensus=debug,nova_network=info
+    - NOVA_CHAIN_ID=42001
+    - NOVA_GENESIS_FILE=/etc/nova/genesis.json
+    - NOVA_KEYSTORE_DIR=/data/keystore
+    - NOVA_DB_PATH=/data/db
+  volumes:
+    - ./genesis.json:/etc/nova/genesis.json:ro
+  networks:
+    - nova-devnet
+
+services:
+
+  # ─── Validator 1 (Bootstrap Node) ─────────────────────────────────────────
+  validator1:
+    <<: *validator-common
+    container_name: nova-validator1
+    hostname: validator1
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.10
+    ports:
+      - "30333:30333"   # P2P
+      - "9933:9933"     # RPC (local sadece)
+      - "9615:9615"     # Prometheus metrics
+    volumes:
+      - validator1-data:/data
+      - ./genesis.json:/etc/nova/genesis.json:ro
+      - ./keys/validator1:/data/keystore:ro
+    environment:
+      - NOVA_NODE_KEY=0101010101010101010101010101010101010101010101010101010101010101
+      - NOVA_VALIDATOR_ID=1
+      - NOVA_BOOTSTRAP_NODES=
+      - NOVA_IS_VALIDATOR=true
+      - NOVA_EXTERNAL_ADDR=172.20.0.10:30333
+    command: >
+      nova-node
+      --chain-id 42001
+      --validator
+      --node-key-hex 0101010101010101010101010101010101010101010101010101010101010101
+      --listen-addr /ip4/0.0.0.0/tcp/30333
+      --rpc-addr 0.0.0.0:9933
+      --metrics-addr 0.0.0.0:9615
+      --db-path /data/db
+      --keystore /data/keystore
+      --genesis /etc/nova/genesis.json
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9933/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ─── Validator 2 ──────────────────────────────────────────────────────────
+  validator2:
+    <<: *validator-common
+    container_name: nova-validator2
+    hostname: validator2
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.11
+    ports:
+      - "30334:30333"
+      - "9934:9933"
+      - "9616:9615"
+    volumes:
+      - validator2-data:/data
+      - ./genesis.json:/etc/nova/genesis.json:ro
+      - ./keys/validator2:/data/keystore:ro
+    environment:
+      - NOVA_NODE_KEY=0202020202020202020202020202020202020202020202020202020202020202
+      - NOVA_VALIDATOR_ID=2
+      - NOVA_BOOTSTRAP_NODES=172.20.0.10:30333
+      - NOVA_IS_VALIDATOR=true
+    command: >
+      nova-node
+      --chain-id 42001
+      --validator
+      --node-key-hex 0202020202020202020202020202020202020202020202020202020202020202
+      --listen-addr /ip4/0.0.0.0/tcp/30333
+      --rpc-addr 0.0.0.0:9933
+      --metrics-addr 0.0.0.0:9615
+      --db-path /data/db
+      --keystore /data/keystore
+      --genesis /etc/nova/genesis.json
+      --bootstrap-peers /ip4/172.20.0.10/tcp/30333
+    depends_on:
+      validator1:
+        condition: service_healthy
+
+  # ─── Validator 3 ──────────────────────────────────────────────────────────
+  validator3:
+    <<: *validator-common
+    container_name: nova-validator3
+    hostname: validator3
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.12
+    ports:
+      - "30335:30333"
+      - "9935:9933"
+      - "9617:9615"
+    volumes:
+      - validator3-data:/data
+      - ./genesis.json:/etc/nova/genesis.json:ro
+      - ./keys/validator3:/data/keystore:ro
+    environment:
+      - NOVA_NODE_KEY=0303030303030303030303030303030303030303030303030303030303030303
+      - NOVA_VALIDATOR_ID=3
+      - NOVA_BOOTSTRAP_NODES=172.20.0.10:30333
+    command: >
+      nova-node
+      --chain-id 42001
+      --validator
+      --node-key-hex 0303030303030303030303030303030303030303030303030303030303030303
+      --listen-addr /ip4/0.0.0.0/tcp/30333
+      --rpc-addr 0.0.0.0:9933
+      --metrics-addr 0.0.0.0:9615
+      --db-path /data/db
+      --keystore /data/keystore
+      --genesis /etc/nova/genesis.json
+      --bootstrap-peers /ip4/172.20.0.10/tcp/30333
+    depends_on:
+      validator1:
+        condition: service_healthy
+
+  # ─── Validator 4 ──────────────────────────────────────────────────────────
+  validator4:
+    <<: *validator-common
+    container_name: nova-validator4
+    hostname: validator4
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.13
+    ports:
+      - "30336:30333"
+      - "9936:9933"
+      - "9618:9615"
+    volumes:
+      - validator4-data:/data
+      - ./genesis.json:/etc/nova/genesis.json:ro
+      - ./keys/validator4:/data/keystore:ro
+    environment:
+      - NOVA_NODE_KEY=0404040404040404040404040404040404040404040404040404040404040404
+      - NOVA_VALIDATOR_ID=4
+    command: >
+      nova-node
+      --chain-id 42001
+      --validator
+      --node-key-hex 0404040404040404040404040404040404040404040404040404040404040404
+      --listen-addr /ip4/0.0.0.0/tcp/30333
+      --rpc-addr 0.0.0.0:9933
+      --metrics-addr 0.0.0.0:9615
+      --db-path /data/db
+      --keystore /data/keystore
+      --genesis /etc/nova/genesis.json
+      --bootstrap-peers /ip4/172.20.0.10/tcp/30333
+    depends_on:
+      validator1:
+        condition: service_healthy
+
+  # ─── Validator 5 ──────────────────────────────────────────────────────────
+  validator5:
+    <<: *validator-common
+    container_name: nova-validator5
+    hostname: validator5
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.14
+    ports:
+      - "30337:30333"
+      - "9937:9933"
+      - "9619:9615"
+    volumes:
+      - validator5-data:/data
+      - ./genesis.json:/etc/nova/genesis.json:ro
+      - ./keys/validator5:/data/keystore:ro
+    environment:
+      - NOVA_NODE_KEY=0505050505050505050505050505050505050505050505050505050505050505
+      - NOVA_VALIDATOR_ID=5
+    command: >
+      nova-node
+      --chain-id 42001
+      --validator
+      --node-key-hex 0505050505050505050505050505050505050505050505050505050505050505
+      --listen-addr /ip4/0.0.0.0/tcp/30333
+      --rpc-addr 0.0.0.0:9933
+      --metrics-addr 0.0.0.0:9615
+      --db-path /data/db
+      --keystore /data/keystore
+      --genesis /etc/nova/genesis.json
+      --bootstrap-peers /ip4/172.20.0.10/tcp/30333
+    depends_on:
+      validator1:
+        condition: service_healthy
+
+  # ─── RPC Node (Public) ────────────────────────────────────────────────────
+  rpc-node:
+    <<: *validator-common
+    container_name: nova-rpc
+    hostname: rpc-node
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.20
+    ports:
+      - "8545:8545"     # JSON-RPC (Ethereum uyumlu)
+      - "8546:8546"     # WebSocket
+      - "9944:9944"     # Nova RPC
+      - "9620:9615"     # Prometheus
+    volumes:
+      - rpc-data:/data
+      - ./genesis.json:/etc/nova/genesis.json:ro
+    environment:
+      - NOVA_NODE_KEY=2020202020202020202020202020202020202020202020202020202020202020
+      - NOVA_IS_VALIDATOR=false
+      - NOVA_RPC_CORS=all
+      - NOVA_RPC_METHODS=safe
+    command: >
+      nova-node
+      --chain-id 42001
+      --rpc
+      --node-key-hex 2020202020202020202020202020202020202020202020202020202020202020
+      --listen-addr /ip4/0.0.0.0/tcp/30333
+      --rpc-addr 0.0.0.0:9944
+      --eth-rpc-addr 0.0.0.0:8545
+      --ws-addr 0.0.0.0:8546
+      --metrics-addr 0.0.0.0:9615
+      --db-path /data/db
+      --genesis /etc/nova/genesis.json
+      --bootstrap-peers /ip4/172.20.0.10/tcp/30333
+      --rpc-cors all
+    depends_on:
+      validator1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9944/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Prometheus ───────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.47.2
+    container_name: nova-prometheus
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.30
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # ─── Grafana ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: nova-grafana
+    networks:
+      nova-devnet:
+        ipv4_address: 172.20.0.31
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=nova-devnet
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    restart: unless-stopped
+    depends_on:
+      - prometheus

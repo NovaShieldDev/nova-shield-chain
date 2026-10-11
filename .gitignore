@@ -1,0 +1,23 @@
+# Rust build artifacts
+target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Research clones (external repos cloned for reference)
+research/chains/
+research/dex/
+research/libs/
+
+# Secrets
+*.pem
+*.key
+*.p12
+secrets/

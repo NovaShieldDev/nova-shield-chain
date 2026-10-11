@@ -193,6 +193,10 @@ pub fn finalize_presign(
     }
 
     // ── 4. PreSignState oluştur ──────────────────────────────────────────────
+    // NOVA-RED-MPC-002: Her imzacı partinin nonce noktasını sakla
+    // signers listesiyle aynı sırada R_i noktaları kaydedilir
+    let nonce_points: Vec<[u8; 33]> = all_r2_msgs.iter().map(|m| m.nonce_point).collect();
+
     let presign_state = PreSignState {
         our_index: my_index,
         signers,
@@ -201,6 +205,7 @@ pub fn finalize_presign(
         public_key: local_key.public_key,
         session_id: *session_id.as_bytes(),
         nonce_used: std::sync::atomic::AtomicBool::new(false),
+        nonce_points,
     };
 
     Ok(presign_state)

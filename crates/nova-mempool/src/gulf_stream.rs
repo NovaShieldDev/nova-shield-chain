@@ -274,10 +274,14 @@ impl GulfStreamRouter {
         }
 
         // Her hedefe TX'i "gönder" (simülasyon: peer cache'e yaz)
+        // NOVA-RED-MEMPOOL-005: peer_caches büyüklük sınırı
         let mut peer_caches = self.peer_caches.lock();
         for target in &targets {
-            peer_caches.entry(*target).or_default().push(tx.clone());
-            self.stats.forwarded += 1;
+            let cache = peer_caches.entry(*target).or_default();
+            if cache.len() < MAX_FORWARDED_TX_PER_VALIDATOR {
+                cache.push(tx.clone());
+                self.stats.forwarded += 1;
+            }
         }
     }
 

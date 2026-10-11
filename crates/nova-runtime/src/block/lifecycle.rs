@@ -100,11 +100,34 @@ impl RuntimeBlock {
     }
 
     /// TX ekle (Open fazında)
+    ///
+    /// NOVA-RED-RUNTIME-003: Gas takibi düzeltmesi — her TX kendi gas maliyetine göre sayılır,
+    /// blok gas limiti aşılırsa TX reddedilir.
     pub fn add_transaction(&mut self, tx: Transaction) -> RuntimeResult<()> {
+        use crate::tx::fee::{BLOCK_GAS_LIMIT, TRANSFER_GAS_COST};
+        use crate::tx::types::TransactionKind;
+
         if self.phase != BlockPhase::Open {
             return Err(RuntimeError::BlockAlreadySealed);
         }
-        self.header.gas_used += crate::tx::fee::TRANSFER_GAS_COST; // Tahmini
+
+        // TX türüne göre gerçek gas maliyeti
+        let tx_gas = match &tx.kind {
+            TransactionKind::Transfer { .. } => TRANSFER_GAS_COST,
+            TransactionKind::Stake { .. } | TransactionKind::Unstake { .. } => 50_000,
+            TransactionKind::GovernanceVote { .. } | TransactionKind::GovernancePropose { .. } => 40_000,
+            TransactionKind::RegisterValidator { .. } => 100_000,
+            TransactionKind::WithdrawUnbonded { .. } => 30_000,
+            TransactionKind::RuntimeUpgrade { .. } => 200_000,
+        };
+
+        // Gas limit kontrolü
+        let new_gas = self.header.gas_used.saturating_add(tx_gas);
+        if new_gas > BLOCK_GAS_LIMIT {
+            return Err(RuntimeError::BlockGasLimitExceeded);
+        }
+
+        self.header.gas_used = new_gas;
         self.transactions.push(tx);
         self.header.tx_count += 1;
         Ok(())

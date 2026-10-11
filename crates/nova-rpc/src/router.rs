@@ -248,10 +248,13 @@ mod tests {
     #[test]
     fn test_router_submit_batch_order() {
         let r = router();
+        // NOVA-RED-AUCTION-003: signature alanı zorunlu
+        let mock_sig = format!("0x{}", "aa".repeat(65));
         let resp = r.handle(req(
             "nova_submitBatchOrder",
             serde_json::json!([{
                 "sender": "0xaaaa",
+                "signature": mock_sig,
                 "sellToken": "NOVA",
                 "buyToken": "USDC",
                 "sellAmount": "0x1000",

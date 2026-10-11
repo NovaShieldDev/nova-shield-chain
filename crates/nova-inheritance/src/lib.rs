@@ -91,7 +91,7 @@ mod integration_tests {
             .build(SlotId(0))
             .unwrap();
 
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         // Birkaç slot heartbeat gönder
         let kp = test_keypair();
@@ -123,7 +123,7 @@ mod integration_tests {
         let state = InheritanceState::new(plan.plan_id, SlotId(0));
 
         // Hesap 2000 slot yaşında → koşul karşılandı
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(2000), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(2000), &std::collections::HashMap::new());
         assert!(ConditionEvaluator::all_satisfied(&results));
     }
 
@@ -194,12 +194,12 @@ mod integration_tests {
 
         // Tek onay — yeterli değil
         state.multisig_approvals.push(addr(1));
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert!(!ConditionEvaluator::all_satisfied(&results));
 
         // İki onay — yeterli
         state.multisig_approvals.push(addr(2));
-        let results2 = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results2 = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert!(ConditionEvaluator::all_satisfied(&results2));
     }
 
@@ -219,7 +219,7 @@ mod integration_tests {
             .unwrap();
 
         let state = InheritanceState::new(plan.plan_id, SlotId(0));
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
 
         let transfers = ConditionEvaluator::required_transfers(results);
         assert_eq!(transfers.len(), 1);
@@ -240,7 +240,7 @@ mod integration_tests {
                 .add_primary_heir(addr(i + 10), 10_000, 500_000)
                 .build(SlotId(i as u64))
                 .unwrap();
-            engine.create_plan(plan).unwrap();
+            engine.create_plan(plan.owner_address, plan).unwrap();
         }
 
         assert_eq!(engine.active_plan_count(), 5);
@@ -264,7 +264,7 @@ mod integration_tests {
             .build(SlotId(0))
             .unwrap();
 
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         // Duress heartbeat gönder (NOVA-RED-INHERITANCE-003: gerçek imza zorunlu)
         let kp = test_keypair();
@@ -307,7 +307,7 @@ mod integration_tests {
             .build(SlotId(0))
             .unwrap();
 
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
         let summary = engine.get_summary(plan_id, SlotId(100)).unwrap();
 
         assert_eq!(summary.owner_account_id, 42);

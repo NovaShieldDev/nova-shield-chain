@@ -1,0 +1,270 @@
+{
+  "uid": "nova-overview",
+  "title": "Nova Shield Chain — Devnet Overview",
+  "tags": ["nova", "devnet"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "TPS (Transactions Per Second)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(nova_mempool_transactions_total[1m]))",
+          "legendFormat": "TPS"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "thresholds": {
+          "steps": [
+            { "value": null, "color": "green" },
+            { "value": 500, "color": "yellow" },
+            { "value": 1000, "color": "red" }
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Blok Süresi (ms)",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "avg(nova_consensus_block_time_ms)",
+          "legendFormat": "Ortalama Blok Süresi"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "unit": "ms",
+        "thresholds": {
+          "steps": [
+            { "value": null, "color": "green" },
+            { "value": 600, "color": "yellow" },
+            { "value": 1000, "color": "red" }
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Aktif Peer Sayısı",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "avg(nova_network_connected_peers)",
+          "legendFormat": "Ortalama Peer"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "thresholds": {
+          "steps": [
+            { "value": null, "color": "red" },
+            { "value": 2, "color": "yellow" },
+            { "value": 4, "color": "green" }
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Validator Uptime",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "count(up{role=\"validator\"} == 1)",
+          "legendFormat": "Çevrimiçi Validator"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "thresholds": {
+          "steps": [
+            { "value": null, "color": "red" },
+            { "value": 3, "color": "yellow" },
+            { "value": 5, "color": "green" }
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Finalize Edilen Blok Sayısı",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(nova_consensus_blocks_finalized_total[1m])) * 60",
+          "legendFormat": "Blok/dk"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list" } },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 },
+          "unit": "short",
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Her Validator — Peer Sayısı",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "nova_network_connected_peers{role=\"validator\"}",
+          "legendFormat": "{{ instance }}"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list" } },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 },
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "red" },
+              { "value": 2, "color": "green" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Bellek Kullanımı",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{role=\"validator\"}",
+          "legendFormat": "{{ instance }}"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list" } },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 },
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "RPC Gecikme (P95)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "nova_rpc_request_duration_seconds{quantile=\"0.95\"}",
+          "legendFormat": "P95 Gecikme"
+        },
+        {
+          "expr": "nova_rpc_request_duration_seconds{quantile=\"0.50\"}",
+          "legendFormat": "P50 Gecikme"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list" } },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 },
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 1, "color": "yellow" },
+              { "value": 2, "color": "red" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "P2P Mesaj Doğrulama Hata Oranı",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nova_p2p_validation_failed[5m]) / rate(nova_p2p_messages_received[5m])",
+          "legendFormat": "{{ instance }} hata oranı"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list" } },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 },
+          "unit": "percentunit",
+          "max": 1
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Slash Olayları (Son 1 Saat)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 20, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(increase(nova_staking_slash_events_total[1h]))",
+          "legendFormat": "Slash Sayısı"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "thresholds": {
+          "steps": [
+            { "value": null, "color": "green" },
+            { "value": 1, "color": "red" }
+          ]
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "CPU Kullanımı",
+      "type": "timeseries",
+      "gridPos": { "x": 18, "y": 20, "w": 6, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total{role=\"validator\"}[1m]) * 100",
+          "legendFormat": "{{ instance }} CPU%"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list" } },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 },
+          "unit": "percent",
+          "max": 100
+        }
+      }
+    }
+  ],
+  "templating": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "name": "Alertler",
+        "datasource": "Prometheus",
+        "enable": true,
+        "expr": "ALERTS{alertstate=\"firing\"}",
+        "titleFormat": "{{ alertname }}",
+        "textFormat": "{{ description }}"
+      }
+    ]
+  }
+}

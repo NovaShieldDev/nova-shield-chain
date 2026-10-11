@@ -54,6 +54,9 @@ pub enum DexError {
 
     #[error("dahili hata: {reason}")]
     Internal { reason: String },
+
+    #[error("launch period aktif: bu adresten maks {max} token alınabilir, talep: {requested}")]
+    LaunchPeriodLimitExceeded { max: u128, requested: u128 },
 }
 
 pub type DexResult<T> = Result<T, DexError>;

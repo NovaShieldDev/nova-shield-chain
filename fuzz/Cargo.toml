@@ -1,0 +1,125 @@
+[package]
+name    = "nova-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name              = "fuzz_block_header"
+path              = "fuzz_targets/fuzz_block_header.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_tx_parse"
+path              = "fuzz_targets/fuzz_tx_parse.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_p2p_handshake"
+path              = "fuzz_targets/fuzz_p2p_handshake.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_network_message"
+path              = "fuzz_targets/fuzz_network_message.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_mimc"
+path              = "fuzz_targets/fuzz_mimc.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_spend_circuit"
+path              = "fuzz_targets/fuzz_spend_circuit.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_gossip_crds"
+path              = "fuzz_targets/fuzz_gossip_crds.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_vm_wasm"
+path              = "fuzz_targets/fuzz_vm_wasm.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_tx_validation"
+path              = "fuzz_targets/fuzz_tx_validation.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_rpc_json"
+path              = "fuzz_targets/fuzz_rpc_json.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_bls_ops"
+path              = "fuzz_targets/fuzz_bls_ops.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_mpc_vss"
+path              = "fuzz_targets/fuzz_mpc_vss.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_denom_trace"
+path              = "fuzz_targets/fuzz_denom_trace.rs"
+test              = false
+doc               = false
+bench             = false
+
+[[bin]]
+name              = "fuzz_governance_tally"
+path              = "fuzz_targets/fuzz_governance_tally.rs"
+test              = false
+doc               = false
+bench             = false
+
+[dependencies]
+libfuzzer-sys    = "0.4"
+nova-consensus   = { path = "../crates/nova-consensus" }
+nova-network     = { path = "../crates/nova-network" }
+nova-primitives  = { path = "../crates/nova-primitives" }
+nova-zk          = { path = "../crates/nova-zk" }
+nova-vm          = { path = "../crates/nova-vm" }
+nova-mempool     = { path = "../crates/nova-mempool" }
+nova-rpc         = { path = "../crates/nova-rpc" }
+nova-mpc         = { path = "../crates/nova-mpc" }
+ark-bls12-381    = { version = "0.4", features = ["std"] }
+ark-ff           = { version = "0.4", default-features = false, features = ["std"] }
+blake3           = { version = "1.5" }
+serde_json       = "1.0"
+
+[profile.release]
+opt-level = 3
+debug     = true

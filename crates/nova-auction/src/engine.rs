@@ -224,8 +224,14 @@ impl BatchAuctionEngine {
         result.computation_time_us = self.current_time_us().saturating_sub(start_us);
 
         // ── 6. State güncelle ─────────────────────────────────────────────
+        // NOVA-RED-AUCTION-001: TOCTOU fix — write lock altında ikinci kontrol.
+        // İlk read-lock kontrolü (adım 1) ile write-lock arasında başka bir thread
+        // aynı slotu işleyip insert etmiş olabilir → write lock altında tekrar kontrol et.
         {
             let mut state = self.state.write();
+            if state.processed_slots.contains_key(&slot) {
+                return Err(AuctionError::BatchAlreadyExecuted { slot });
+            }
             state.stats.update_from_result(&result);
             state.last_processed_slot = Some(slot);
             state.processed_slots.insert(slot, result.clone());

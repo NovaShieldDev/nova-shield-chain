@@ -153,8 +153,11 @@ impl TriggerEvaluator {
         guardian_threshold: u8,
     ) -> TriggerEvaluation {
         if !requires_guardian_approval {
-            // Guardian onayı gerekmez → kullanıcı tek başına aktive eder
-            // Bu kontrol dışarıda yapılır (kullanıcı imzası yeterli)
+            // NOVA-RED-INH-005: Kullanıcı kendi imzasıyla `trigger_manual_activation()` çağırmalı.
+            // `user_manual_activation_requested` bayrağı ayarlanmamışsa → henüz hazır değil.
+            if !state.user_manual_activation_requested {
+                return TriggerEvaluation::NotYet { remaining_secs: 0 };
+            }
             TriggerEvaluation::ManualActivationReady
         } else {
             let approval_count = state.manual_activation_approvals.len() as u8;
@@ -271,6 +274,7 @@ mod tests {
             created_at_slot: SlotId(0),
             updated_at_slot: SlotId(0),
             is_active: true,
+            guardian_ids: vec![],
         }
     }
 
@@ -400,15 +404,31 @@ mod tests {
         assert_eq!(eval, TriggerEvaluation::ShouldTrigger);
     }
 
-    // ManualActivation: guardian onayı olmadan hazır
+    // NOVA-RED-INH-005: ManualActivation — kullanıcı imzası olmadan henüz hazır değil
     #[test]
-    fn test_manual_activation_no_guardian_required() {
+    fn test_manual_activation_requires_user_request() {
         let trigger = TriggerType::ManualActivation {
             requires_guardian_approval: false,
             guardian_threshold: 0,
         };
         let plan = make_plan(trigger);
-        let state = make_state(0);
+        let state = make_state(0); // user_manual_activation_requested: false
+
+        let eval = TriggerEvaluator::evaluate(&plan, &state, SlotId(100));
+        // Kullanıcı henüz imzalamadı → NotYet
+        assert!(matches!(eval, TriggerEvaluation::NotYet { .. }));
+    }
+
+    // NOVA-RED-INH-005: ManualActivation — kullanıcı imzaladıktan sonra hazır
+    #[test]
+    fn test_manual_activation_ready_after_user_request() {
+        let trigger = TriggerType::ManualActivation {
+            requires_guardian_approval: false,
+            guardian_threshold: 0,
+        };
+        let plan = make_plan(trigger);
+        let mut state = make_state(0);
+        state.user_manual_activation_requested = true; // Kullanıcı imzaladı
 
         let eval = TriggerEvaluator::evaluate(&plan, &state, SlotId(100));
         assert_eq!(eval, TriggerEvaluation::ManualActivationReady);

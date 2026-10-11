@@ -276,6 +276,13 @@ pub struct PreSignState {
     /// için kullanılırsa gizli pay matematiksel olarak türetilebilir.
     #[zeroize(skip)]
     pub nonce_used: std::sync::atomic::AtomicBool,
+
+    /// NOVA-RED-MPC-002: Her imzacı partinin nonce noktası R_i (sıkıştırılmış, 33 byte).
+    /// `signers` listesiyle aynı sırada: signers[i] ↔ nonce_points[i].
+    /// `aggregate_partial_signatures()` bu noktaları kullanarak her partial imzayı
+    /// `verify_partial_signature()` ile doğrular.
+    #[zeroize(skip)]
+    pub nonce_points: Vec<[u8; 33]>,
 }
 
 // ─── PARTIAL SIGNATURE ───────────────────────────────────────────────────────

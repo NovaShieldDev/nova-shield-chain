@@ -41,6 +41,15 @@ impl BatchHandler {
                 reason: "sender alanı gerekli".into(),
             })?;
 
+        // NOVA-RED-AUCTION-003: Sender doğrulaması — imza zorunlu.
+        // Herkes başkasının sender'ı ile emir gönderemez.
+        // Format düzeyinde kontrol; tam ECDSA doğrulaması konsensüs katmanında.
+        let signature = order.get("signature").and_then(|v| v.as_str())
+            .ok_or_else(|| RpcError::InvalidSignature {
+                reason: "signature alanı zorunlu — sender kimliği imzayla kanıtlanmalı".into(),
+            })?;
+        validate_sig(signature)?;
+
         let sell_token = order.get("sellToken").and_then(|v| v.as_str())
             .ok_or_else(|| RpcError::InvalidParams {
                 reason: "sellToken gerekli".into(),
@@ -146,6 +155,7 @@ mod tests {
         let h = handler();
         let result = h.submit_batch_order(&[serde_json::json!({
             "sender": "0xaaaa",
+            "signature": MOCK_SIG,
             "sellToken": "NOVA",
             "buyToken": "USDC",
             "sellAmount": "0xde0b6b3a7640000",
@@ -160,6 +170,7 @@ mod tests {
         let h = handler();
         let result = h.submit_batch_order(&[serde_json::json!({
             "sender": "0xaaaa",
+            "signature": MOCK_SIG,
             "sellToken": "NOVA",
             "buyToken": "NOVA",
             "sellAmount": "0x1000",
@@ -175,6 +186,32 @@ mod tests {
             "buyToken": "USDC",
         })]);
         assert!(result.is_err());
+    }
+
+    /// NOVA-RED-AUCTION-003: İmzasız emir reddedilmeli
+    #[test]
+    fn test_submit_batch_order_no_signature_rejected() {
+        let h = handler();
+        let result = h.submit_batch_order(&[serde_json::json!({
+            "sender": "0xaaaa",
+            "sellToken": "NOVA",
+            "buyToken": "USDC",
+            "sellAmount": "0x1000",
+        })]);
+        assert!(result.is_err(), "imzasız emir reddedilmeli");
+    }
+
+    /// NOVA-RED-AUCTION-003: Kısa imzayla emir reddedilmeli
+    #[test]
+    fn test_submit_batch_order_short_signature_rejected() {
+        let h = handler();
+        let result = h.submit_batch_order(&[serde_json::json!({
+            "sender": "0xaaaa",
+            "signature": "0xdeadbeef",
+            "sellToken": "NOVA",
+            "buyToken": "USDC",
+        })]);
+        assert!(result.is_err(), "kısa imza reddedilmeli");
     }
 
     #[test]

@@ -233,8 +233,16 @@ impl NetworkWorker {
             }
 
             ServiceToWorkerMsg::DisconnectPeer { peer_id } => {
+                // NOVA-RED-NETWORK-003: Underflow koruması — yalnızca gerçekten Connected
+                // durumdaki peer için sayacı azalt. Bağlı olmayan peer'ı disconnect etmek
+                // AtomicUsize::fetch_sub ile usize::MAX'a taşmayı önler.
+                let was_connected = self.peer_store.peer_info(&peer_id)
+                    .map(|info| info.state == crate::peer::info::PeerState::Connected)
+                    .unwrap_or(false);
                 self.peer_store.report_disconnect(&peer_id);
-                self.num_connected.fetch_sub(1, Ordering::Relaxed);
+                if was_connected {
+                    self.num_connected.fetch_sub(1, Ordering::Relaxed);
+                }
                 let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer_id));
             }
 

@@ -108,7 +108,13 @@ impl InheritanceEngine {
     /// Yeni miras planı oluştur.
     ///
     /// Cosmos SDK `Keeper.SetProposal()` analogu.
-    pub fn create_plan(&self, plan: InheritancePlan) -> InheritanceResult<InheritancePlanId> {
+    /// NOVA-RED-INH-003: caller, plan sahibiyle eşleşmeli — başkası adına plan oluşturulamaz.
+    pub fn create_plan(&self, caller: Address, plan: InheritancePlan) -> InheritanceResult<InheritancePlanId> {
+        // Yetki kontrolü
+        if caller != plan.owner_address {
+            return Err(InheritanceError::Unauthorized);
+        }
+
         plan.validate()?;
 
         let plan_id = plan.plan_id;
@@ -229,6 +235,48 @@ impl InheritanceEngine {
             if !state_ref.multisig_approvals.contains(&approver) {
                 state_ref.multisig_approvals.push(approver);
             }
+        }
+
+        Ok(())
+    }
+
+    /// Manuel aktivasyonu kullanıcı imzasıyla tetikle.
+    ///
+    /// NOVA-RED-INH-005: `ManualActivation { requires_guardian_approval: false }` planlarında
+    /// yalnızca plan sahibi (owner_address) bu fonksiyonu çağırabilir. Caller kimliği
+    /// doğrulanmadan `user_manual_activation_requested` bayrağı ayarlanamaz.
+    pub fn trigger_manual_activation(
+        &self,
+        caller: Address,
+        plan_id: InheritancePlanId,
+        current_slot: SlotId,
+    ) -> InheritanceResult<()> {
+        let plan = self.get_plan(plan_id)?;
+
+        // Yalnızca plan sahibi manuel aktivasyon tetikleyebilir
+        if caller != plan.owner_address {
+            return Err(InheritanceError::Unauthorized);
+        }
+
+        // Yalnızca ManualActivation tipi için geçerli
+        match &plan.trigger {
+            crate::types::TriggerType::ManualActivation { requires_guardian_approval, .. } => {
+                if *requires_guardian_approval {
+                    return Err(InheritanceError::InvalidParameter(
+                        "Guardian onaylı planlar için guardian onayı kullanın".into(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(InheritanceError::InvalidParameter(
+                    "Bu plan ManualActivation tipinde değil".into(),
+                ));
+            }
+        }
+
+        if let Some(mut state_ref) = self.states.get_mut(&plan_id) {
+            state_ref.user_manual_activation_requested = true;
+            state_ref.updated_at_slot = current_slot;
         }
 
         Ok(())
@@ -356,16 +404,17 @@ impl InheritanceEngine {
             return vec![];
         }
 
-        // Hesap yaratılma slotu (yaş koşulu için)
-        let account_creation_slot = self
+        // NOVA-RED-INH-004: Her varis kendi hesap yaratılma slotuna göre değerlendirilir.
+        // DashMap'ten HashMap'e çevir (evaluate_all API'si için)
+        let account_creation_slots_map: std::collections::HashMap<nova_primitives::types::Address, SlotId> = self
             .account_creation_slots
-            .get(&plan.owner_address)
-            .map(|s| *s)
-            .unwrap_or(SlotId(0));
+            .iter()
+            .map(|entry| (*entry.key(), *entry.value()))
+            .collect();
 
         // Koşulları değerlendir
         let condition_results =
-            ConditionEvaluator::evaluate_all(plan, &state, current_slot, account_creation_slot);
+            ConditionEvaluator::evaluate_all(plan, &state, current_slot, &account_creation_slots_map);
 
         // Blocking koşul varsa transfer yok
         if !ConditionEvaluator::all_satisfied(&condition_results) {
@@ -426,11 +475,20 @@ impl InheritanceEngine {
     ///
     /// BUG-22 düzeltmesi: Daha önce `amount_for(state.total_transferred.0)` kullanılıyordu
     /// ancak `total_transferred` zaten transfer edilmiş miktardır — toplam bakiye değil.
+    ///
+    /// NOVA-RED-INHERIT-002/004: caller, plan sahibiyle eşleşmeli.
     pub fn set_estate_balance(
         &self,
+        caller: Address,
         plan_id: InheritancePlanId,
         owner_balance: u128,
     ) -> InheritanceResult<()> {
+        // Yetki kontrolü — sadece plan sahibi bakiyesini güncelleyebilir
+        let plan = self.get_plan(plan_id)?;
+        if plan.owner_address != caller {
+            return Err(InheritanceError::Unauthorized);
+        }
+
         let mut state_ref = self
             .states
             .get_mut(&plan_id)
@@ -566,7 +624,7 @@ mod tests {
     fn test_create_plan() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
         let retrieved = engine.get_plan(plan_id).unwrap();
         assert_eq!(retrieved.owner_address, addr(0));
     }
@@ -576,8 +634,8 @@ mod tests {
     fn test_create_plan_duplicate_fails() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        engine.create_plan(plan.clone()).unwrap();
-        let result = engine.create_plan(plan);
+        engine.create_plan(plan.owner_address, plan.clone()).unwrap();
+        let result = engine.create_plan(plan.owner_address, plan);
         assert!(matches!(result, Err(InheritanceError::PlanAlreadyExists)));
     }
 
@@ -597,7 +655,7 @@ mod tests {
     fn test_process_heartbeat() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         let kp = test_keypair();
         let pk = test_pubkey();
@@ -614,7 +672,7 @@ mod tests {
     fn test_duress_heartbeat_sets_flag() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         let kp = test_keypair();
         let pk = test_pubkey();
@@ -647,7 +705,7 @@ mod tests {
         let engine = make_engine();
         let owner = addr(0);
         let plan = make_plan(owner, 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         engine.cancel_plan(plan_id, owner, SlotId(100)).unwrap();
 
@@ -660,7 +718,7 @@ mod tests {
     fn test_cancel_plan_unauthorized() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         let result = engine.cancel_plan(plan_id, addr(99), SlotId(100));
         assert!(matches!(result, Err(InheritanceError::InvalidParameter(_))));
@@ -671,7 +729,7 @@ mod tests {
     fn test_multisig_approval() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         engine.add_multisig_approval(plan_id, addr(1)).unwrap();
 
@@ -684,7 +742,7 @@ mod tests {
     fn test_multisig_approval_non_heir_fails() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         let result = engine.add_multisig_approval(plan_id, addr(99));
         assert!(matches!(result, Err(InheritanceError::HeirNotFound { .. })));
@@ -695,7 +753,7 @@ mod tests {
     fn test_heir_acknowledgement() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         engine
             .record_heir_acknowledgement(plan_id, addr(1), SlotId(500))
@@ -712,8 +770,8 @@ mod tests {
         let plan1 = make_plan(addr(0), 30 * 24 * 3600);
         let plan2 = make_plan(addr(1), 60 * 24 * 3600);
 
-        engine.create_plan(plan1).unwrap();
-        engine.create_plan(plan2).unwrap();
+        engine.create_plan(plan1.owner_address, plan1).unwrap();
+        engine.create_plan(plan2.owner_address, plan2).unwrap();
 
         let result = engine.on_slot(SlotId(100));
         assert_eq!(result.plans_processed, 2);
@@ -735,8 +793,8 @@ mod tests {
         let engine = make_engine();
         assert_eq!(engine.active_plan_count(), 0);
 
-        engine.create_plan(make_plan(addr(0), 30 * 24 * 3600)).unwrap();
-        engine.create_plan(make_plan(addr(1), 30 * 24 * 3600)).unwrap();
+        { let p = make_plan(addr(0), 30 * 24 * 3600); engine.create_plan(p.owner_address, p).unwrap(); }
+        { let p = make_plan(addr(1), 30 * 24 * 3600); engine.create_plan(p.owner_address, p).unwrap(); }
         assert_eq!(engine.active_plan_count(), 2);
     }
 
@@ -745,7 +803,7 @@ mod tests {
     fn test_get_summary() {
         let engine = make_engine();
         let plan = make_plan(addr(0), 30 * 24 * 3600);
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         let summary = engine.get_summary(plan_id, SlotId(0)).unwrap();
         assert_eq!(summary.plan_id, plan_id);
@@ -778,7 +836,7 @@ mod tests {
             .build(SlotId(0))
             .unwrap();
 
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
 
         engine
             .mark_transfer_executed(plan_id, 0, 50_000, SlotId(1000))
@@ -805,15 +863,15 @@ mod tests {
             .build(SlotId(0))
             .unwrap();
 
-        let plan_id = engine.create_plan(plan).unwrap();
+        let plan_id = engine.create_plan(plan.owner_address, plan).unwrap();
         const ESTATE: u128 = 1_000_000;
 
         // set_estate_balance çağrısı öncesi: locked_estate = 0 → transfer üretemez
         let state_before = engine.get_state(plan_id).unwrap();
         assert_eq!(state_before.locked_estate, 0);
 
-        // Sahibin bakiyesini motor'a bildir
-        engine.set_estate_balance(plan_id, ESTATE).unwrap();
+        // Sahibin bakiyesini motor'a bildir (caller = plan sahibi)
+        engine.set_estate_balance(addr(0), plan_id, ESTATE).unwrap();
 
         let state_after = engine.get_state(plan_id).unwrap();
         assert_eq!(state_after.locked_estate, ESTATE);

@@ -97,12 +97,18 @@ impl GuardianService {
     }
 
     /// Heartbeat işle
-    pub fn process_heartbeat(&mut self, account: [u8; 20], slot: u64) -> NodeResult<()> {
+    ///
+    /// NOVA-RED-NODE-010: caller parametresi eklendi — sadece hesap sahibi kendi heartbeat'ini gönderebilir.
+    pub fn process_heartbeat(&mut self, caller: [u8; 20], account: [u8; 20], slot: u64) -> NodeResult<()> {
         if !self.status.is_running() {
             return Err(NodeError::ServiceStartError {
                 service: "GuardianService".into(),
                 reason: "servis çalışmıyor".into(),
             });
+        }
+        // Yetki kontrolü: sadece hesap sahibi heartbeat gönderebilir
+        if caller != account {
+            return Err(NodeError::Unauthorized);
         }
         if let Some(mut entry) = self.monitored.get_mut(&account) {
             entry.last_heartbeat_slot = slot;
@@ -201,7 +207,7 @@ mod tests {
         svc.start().unwrap();
 
         svc.monitor_account(account(1), 1, 1000).unwrap();
-        svc.process_heartbeat(account(1), 500).unwrap();
+        svc.process_heartbeat(account(1), account(1), 500).unwrap();
 
         // Slot 600 — henüz inaktif değil (son heartbeat 500, threshold 1000)
         let events = svc.process_slot(600);
@@ -237,7 +243,7 @@ mod tests {
         svc.start().unwrap();
 
         svc.monitor_account(account(3), 1, 1000).unwrap();
-        svc.process_heartbeat(account(3), 50).unwrap();
+        svc.process_heartbeat(account(3), account(3), 50).unwrap();
 
         assert!(svc.events().iter().any(|e| matches!(e, GuardianEvent::HeartbeatReceived { slot: 50, .. })));
     }

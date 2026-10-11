@@ -284,18 +284,27 @@ impl BeefyLightClient {
             });
         }
 
-        // İmzaları doğrula (mock)
+        // NOVA-RED-GUARD-005: İmzaları validator public key'e göre doğrula.
+        // Sıfır kontrolü yerine BLAKE3(commitment_hash, validator_key, index) ile eşleştir.
         let commitment_hash = signed.commitment.commitment_hash();
         for sig in &signed.signatures {
-            if sig.validator_index as usize >= self.current_authority_set.validators.len() {
+            let idx = sig.validator_index as usize;
+            if idx >= self.current_authority_set.validators.len() {
                 return Err(GuardError::BeefyCommitmentInvalid {
                     reason: format!("geçersiz validator indeksi: {}", sig.validator_index),
                 });
             }
-            // Mock doğrulama: imza sıfır mı?
-            if sig.signature == [0u8; 32] {
+            let validator_key = &self.current_authority_set.validators[idx];
+            // BeefySignature::mock_sign ile tutarlı doğrulama
+            let expected = blake3_hash_many(&[
+                b"beefy-sign",
+                &commitment_hash,
+                validator_key.as_slice(),
+                &[sig.validator_index as u8],
+            ]);
+            if sig.signature != expected {
                 return Err(GuardError::BeefyCommitmentInvalid {
-                    reason: "sıfır imza".into(),
+                    reason: format!("geçersiz imza: validator_index={}", sig.validator_index),
                 });
             }
         }

@@ -34,7 +34,8 @@ pub use auth::{
 pub use errors::{DexError, DexResult};
 pub use mev::{MevProtectedMempool, SwapIntent, SLOT_DURATION_MS};
 pub use pool::{
-    LockDuration, Pool, PoolRegistry,
-    CREATION_FEE_USD_CENTS, LP_FEE_BPS, NOVA_DECIMALS,
+    LockDuration, Pool, PoolRegistry, PayoutResult,
+    CREATION_FEE_USD_CENTS, LP_FEE_BPS, LP_FEE_DISCOUNT_BPS,
+    VOLUME_DISCOUNT_THRESHOLD, NOVA_DECIMALS,
 };
 pub use snapshot::{RegistrySnapshot, SNAPSHOT_VERSION, open_db};

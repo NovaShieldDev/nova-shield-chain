@@ -33,6 +33,10 @@ pub enum NodeError {
 
     #[error("veritabanı hatası: {reason}")]
     DatabaseError { reason: String },
+
+    /// NOVA-RED-NODE-010: Yetkisiz erişim
+    #[error("yetkisiz erişim")]
+    Unauthorized,
 }
 
 pub type NodeResult<T> = Result<T, NodeError>;

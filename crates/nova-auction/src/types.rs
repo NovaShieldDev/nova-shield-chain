@@ -783,7 +783,12 @@ impl Default for AuctionConfig {
             default_max_slippage_bps: 50, // %0.5
             allow_partial_fills: true,
             min_order_amount: 1_000_000,  // 1 microNSC
-            max_order_amount: u128::MAX / 2,
+            // NOVA-RED-AUCTION-002: u128::MAX / 2 overflow riski → safe üst sınır.
+            // amount * limit_price (u128 * u128) overflow önlemek için:
+            // amount <= u128::MAX / PRICE_PRECISION garantisi sağlanır.
+            // Tüm fiyat hesaplamalarında (compute_quote_amount, total_quote_cost) checked_mul
+            // ile ek güvence mevcuttur.
+            max_order_amount: u128::MAX / PRICE_PRECISION,
             min_clearing_volume: 0,
             price_tick_size: 1,
             max_carryover_orders: 1_000,

@@ -136,6 +136,7 @@ impl PlanBuilder {
             created_at_slot,
             updated_at_slot: created_at_slot,
             is_active: true,
+            guardian_ids: vec![],
         };
 
         // Plan doğrulama

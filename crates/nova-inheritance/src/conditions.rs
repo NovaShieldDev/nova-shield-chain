@@ -62,11 +62,14 @@ impl ConditionEvaluator {
     ///
     /// Cosmos Authz: her kurala `Accept()` çağrısı.
     /// Sıra: önce borç ödemeleri, sonra hayır kurumu, sonra diğerleri.
+    /// NOVA-RED-INH-004: `account_creation_slots` haritası eklendi — her varis kendi
+    /// hesap yaratılma slotuna göre değerlendirilir (owner slotu değil).
+    /// Eski çağrı tarafları boş HashMap geçirebilir; bu durumda default SlotId(0) kullanılır.
     pub fn evaluate_all(
         plan: &InheritancePlan,
         state: &InheritanceState,
         current_slot: SlotId,
-        account_creation_slot: SlotId,
+        account_creation_slots: &std::collections::HashMap<nova_primitives::types::Address, SlotId>,
     ) -> Vec<ConditionResult> {
         // Öncelik sıralaması: borç ödemeleri önce
         let mut sorted_conditions = plan.conditions.clone();
@@ -79,7 +82,7 @@ impl ConditionEvaluator {
 
         sorted_conditions
             .iter()
-            .map(|rule| Self::evaluate_one(rule, plan, state, current_slot, account_creation_slot))
+            .map(|rule| Self::evaluate_one(rule, plan, state, current_slot, account_creation_slots))
             .collect()
     }
 
@@ -89,11 +92,16 @@ impl ConditionEvaluator {
         plan: &InheritancePlan,
         state: &InheritanceState,
         current_slot: SlotId,
-        account_creation_slot: SlotId,
+        account_creation_slots: &std::collections::HashMap<nova_primitives::types::Address, SlotId>,
     ) -> ConditionResult {
         match rule {
             ConditionalRule::AgeCondition { heir_address, min_account_age_slots } => {
-                Self::evaluate_age(heir_address, *min_account_age_slots, account_creation_slot, current_slot)
+                // NOVA-RED-INH-004: Varis'e özgü hesap yaratılma slotu kullan
+                let heir_creation_slot = account_creation_slots
+                    .get(heir_address)
+                    .copied()
+                    .unwrap_or(SlotId(0));
+                Self::evaluate_age(heir_address, *min_account_age_slots, heir_creation_slot, current_slot)
             }
             ConditionalRule::DebtPayment { creditor, amount, priority } => {
                 Self::evaluate_debt(plan, creditor, *amount)
@@ -111,7 +119,7 @@ impl ConditionEvaluator {
     ///
     /// §5.4.7: "Zincir, blok timestamp'ini temel alır; sosyal kanıt gerekmez."
     fn evaluate_age(
-        _heir_address: &Address,
+        _heir_address: &Address,  // Gelecekte loglama veya ek kontroller için saklanır
         min_age_slots: u64,
         account_creation_slot: SlotId,
         current_slot: SlotId,
@@ -266,6 +274,7 @@ mod tests {
             created_at_slot: SlotId(0),
             updated_at_slot: SlotId(0),
             is_active: true,
+            guardian_ids: vec![],
         }
     }
 
@@ -284,7 +293,7 @@ mod tests {
         let state = make_state();
 
         // Hesap creation_slot=0, current=2000 → yaş = 2000 slot > 1000
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(2000), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(2000), &std::collections::HashMap::new());
         assert!(matches!(results[0], ConditionResult::Satisfied));
         assert!(ConditionEvaluator::all_satisfied(&results));
     }
@@ -300,7 +309,7 @@ mod tests {
         let state = make_state();
 
         // Yaş = 500 slot < 10_000
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(500), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(500), &std::collections::HashMap::new());
         assert!(matches!(results[0], ConditionResult::NotSatisfied { .. }));
         assert!(!ConditionEvaluator::all_satisfied(&results));
     }
@@ -316,7 +325,7 @@ mod tests {
         let plan = make_plan_with_conditions(conditions);
         let state = make_state();
 
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert!(matches!(results[0], ConditionResult::RequiresTransfer { .. }));
 
         let transfers = ConditionEvaluator::required_transfers(results);
@@ -335,7 +344,7 @@ mod tests {
         let plan = make_plan_with_conditions(conditions);
         let state = make_state();
 
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert!(matches!(results[0], ConditionResult::RequiresTransfer { .. }));
 
         // Gerçek miktar hesabı
@@ -356,7 +365,7 @@ mod tests {
         state.multisig_approvals.push(addr(1));
         state.multisig_approvals.push(addr(2));
 
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert!(matches!(results[0], ConditionResult::Satisfied));
     }
 
@@ -372,7 +381,7 @@ mod tests {
         let mut state = make_state();
         state.multisig_approvals.push(addr(1)); // 1/3
 
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert!(matches!(results[0], ConditionResult::NotSatisfied { .. }));
     }
 
@@ -386,7 +395,7 @@ mod tests {
         let plan = make_plan_with_conditions(conditions);
         let state = make_state();
 
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert_eq!(results.len(), 2);
 
         // Her ikisi de transfer gerektiriyor
@@ -400,7 +409,7 @@ mod tests {
         let plan = make_plan_with_conditions(vec![]);
         let state = make_state();
 
-        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), SlotId(0));
+        let results = ConditionEvaluator::evaluate_all(&plan, &state, SlotId(100), &std::collections::HashMap::new());
         assert!(results.is_empty());
         assert!(ConditionEvaluator::all_satisfied(&results));
     }

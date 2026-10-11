@@ -1,0 +1,10 @@
+[build]
+# Varsayılan linker kullan (platform default)
+
+[alias]
+# Nova Shield kısayolları
+nt   = "test --workspace"
+nb   = "build --workspace"
+nf   = "fmt --all"
+ncl  = "clippy --workspace --all-targets -- -D warnings"
+nrel = "build --workspace --release"

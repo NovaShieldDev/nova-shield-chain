@@ -236,7 +236,15 @@ impl IbcModule {
     }
 
     /// IBC transfer başlat — Cosmos SDK `SendTransfer`
-    pub fn send_transfer(&self, msg: IbcTransferMsg) -> GuardResult<IbcPacket> {
+    ///
+    /// NOVA-RED-GUARD-007: `caller` parametresi `msg.sender.display` ile eşleşmeli.
+    /// Aksi hâlde başkası adına transfer başlatılabilir.
+    pub fn send_transfer(&self, caller: &str, msg: IbcTransferMsg) -> GuardResult<IbcPacket> {
+        // Caller authorization
+        if caller != msg.sender.display {
+            return Err(GuardError::Unauthorized);
+        }
+
         let channel = self.channels.get(&msg.source_channel)
             .ok_or_else(|| GuardError::IbcChannelNotFound {
                 channel_id: msg.source_channel.clone(),
@@ -405,11 +413,13 @@ mod tests {
         let module = IbcModule::new();
         module.register_channel(make_channel());
 
+        let sender = cosmos_addr();
+        let caller = sender.display.clone();
         let msg = IbcTransferMsg::new(
             "channel-0", "uatom", 1_000_000,
-            cosmos_addr(), cosmos_addr(), 1000,
+            sender, cosmos_addr(), 1000,
         );
-        let packet = module.send_transfer(msg).unwrap();
+        let packet = module.send_transfer(&caller, msg).unwrap();
 
         assert_eq!(packet.sequence, 1);
         assert_eq!(packet.source_channel, "channel-0");
@@ -422,11 +432,13 @@ mod tests {
         module.register_channel(make_channel());
 
         for _ in 0..3 {
+            let sender = cosmos_addr();
+            let caller = sender.display.clone();
             let msg = IbcTransferMsg::new(
                 "channel-0", "uatom", 500_000,
-                cosmos_addr(), cosmos_addr(), 1000,
+                sender, cosmos_addr(), 1000,
             );
-            module.send_transfer(msg).unwrap();
+            module.send_transfer(&caller, msg).unwrap();
         }
         assert_eq!(module.pending_count(), 3);
     }
@@ -434,11 +446,13 @@ mod tests {
     #[test]
     fn test_ibc_module_channel_not_found() {
         let module = IbcModule::new();
+        let sender = cosmos_addr();
+        let caller = sender.display.clone();
         let msg = IbcTransferMsg::new(
             "channel-99", "uatom", 1_000,
-            cosmos_addr(), cosmos_addr(), 1000,
+            sender, cosmos_addr(), 1000,
         );
-        let result = module.send_transfer(msg);
+        let result = module.send_transfer(&caller, msg);
         assert!(matches!(result, Err(GuardError::IbcChannelNotFound { .. })));
     }
 
@@ -447,13 +461,31 @@ mod tests {
         let module = IbcModule::new();
         module.register_channel(make_channel());
 
+        let sender = cosmos_addr();
+        let caller = sender.display.clone();
         let msg = IbcTransferMsg::new(
             "channel-0", "uatom", 1_000_000,
-            cosmos_addr(), cosmos_addr(), 1000,
+            sender, cosmos_addr(), 1000,
         );
-        let packet = module.send_transfer(msg).unwrap();
+        let packet = module.send_transfer(&caller, msg).unwrap();
 
         assert!(module.acknowledge_packet(packet.sequence));
         assert_eq!(module.pending_count(), 0);
+    }
+
+    /// NOVA-RED-GUARD-007: Yanlış caller → Unauthorized hatası
+    #[test]
+    fn test_ibc_send_transfer_unauthorized_rejected() {
+        let module = IbcModule::new();
+        module.register_channel(make_channel());
+
+        let sender = cosmos_addr();
+        let wrong_caller = "cosmos1attacker000000000000000000000000000";
+        let msg = IbcTransferMsg::new(
+            "channel-0", "uatom", 1_000_000,
+            sender, cosmos_addr(), 1000,
+        );
+        let result = module.send_transfer(wrong_caller, msg);
+        assert!(matches!(result, Err(GuardError::Unauthorized)));
     }
 }

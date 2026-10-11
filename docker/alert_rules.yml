@@ -1,0 +1,76 @@
+groups:
+  # AŞAMA 11 Görev 79: Alertmanager kuralları
+  - name: nova-validator-alerts
+    rules:
+      # Validator offline
+      - alert: ValidatorOffline
+        expr: up{role="validator"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Validator offline: {{ $labels.instance }}"
+          description: "Validator {{ $labels.instance }} 1 dakikadır yanıt vermiyor."
+
+      # Düşük peer sayısı
+      - alert: LowPeerCount
+        expr: nova_network_connected_peers < 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Düşük peer sayısı: {{ $labels.instance }}"
+          description: "Node {{ $labels.instance }} sadece {{ $value }} peer'a bağlı (minimum 2)."
+
+      # Blok üretimi durdu
+      - alert: BlockProductionStopped
+        expr: increase(nova_consensus_blocks_finalized_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blok üretimi durdu"
+          description: "Son 5 dakikada hiç blok üretilmedi."
+
+      # Yüksek bellek kullanımı
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes > 4e9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Yüksek bellek: {{ $labels.instance }}"
+          description: "Node {{ $labels.instance }} 4GB'tan fazla bellek kullanıyor."
+
+      # Validator slash edildi
+      - alert: ValidatorSlashed
+        expr: increase(nova_staking_slash_events_total[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Validator slash edildi"
+          description: "Son 1 saatte {{ $value }} slash olayı gerçekleşti."
+
+  - name: nova-network-alerts
+    rules:
+      # P2P mesaj doğrulama hata oranı yüksek
+      - alert: HighValidationFailureRate
+        expr: |
+          rate(nova_p2p_validation_failed[5m]) /
+          rate(nova_p2p_messages_received[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Yüksek mesaj hata oranı"
+          description: "%{{ $value | humanizePercentage }} mesaj doğrulama başarısız."
+
+      # RPC node yanıt süresi yüksek
+      - alert: HighRpcLatency
+        expr: nova_rpc_request_duration_seconds{quantile="0.95"} > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Yüksek RPC gecikmesi"
+          description: "P95 RPC gecikmesi {{ $value }}s (eşik: 2s)."

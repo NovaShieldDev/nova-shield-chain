@@ -1,0 +1,17 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY target/release/nova-node /usr/local/bin/nova-node
+RUN chmod +x /usr/local/bin/nova-node
+
+RUN mkdir -p /data/nova
+
+EXPOSE 30333 9933 9944
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+    CMD curl -sf http://localhost:9933/health || exit 1
+
+ENTRYPOINT ["nova-node"]

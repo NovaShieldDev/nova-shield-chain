@@ -168,8 +168,12 @@ impl GuardianProtection {
     /// Guardian aksiyon doğrulama.
     ///
     /// Cosmos Authz `Accept()` analog.
+    ///
+    /// NOVA-RED-INH-002: `plan` parametresi eklendi — `ApproveManualActivation`'da
+    /// guardian_id'nin plan'ın `guardian_ids` listesinde olup olmadığı kontrol edilir.
     pub fn validate_action(
         action: &GuardianAction,
+        plan: &crate::types::InheritancePlan,
         state: &InheritanceState,
         current_slot: SlotId,
     ) -> InheritanceResult<()> {
@@ -190,12 +194,20 @@ impl GuardianProtection {
 
                 Ok(())
             }
-            GuardianAction::ApproveManualActivation { .. } => {
-                // Her zaman onay verilebilir (threshold kontrolü ayrıca yapılır)
+            GuardianAction::ApproveManualActivation { guardian_id } => {
+                // NOVA-RED-INH-002: Guardian kimlik doğrulaması — yalnızca plana kayıtlı
+                // guardian'lar onay verebilir. guardian_ids boşsa herhangi bir onay kabul edilir
+                // (geriye dönük uyumluluk için eski planlar).
+                if !plan.guardian_ids.is_empty() && !plan.guardian_ids.contains(guardian_id) {
+                    return Err(InheritanceError::Unauthorized);
+                }
                 Ok(())
             }
-            GuardianAction::ApproveGuardianChange { .. } => {
-                // Guardian değişikliği her aşamada onaylanabilir
+            GuardianAction::ApproveGuardianChange { old_guardian_id, .. } => {
+                // NOVA-RED-INH-002: Değişikliği yalnızca mevcut guardian başlatabilir.
+                if !plan.guardian_ids.is_empty() && !plan.guardian_ids.contains(old_guardian_id) {
+                    return Err(InheritanceError::Unauthorized);
+                }
                 Ok(())
             }
         }
@@ -241,6 +253,7 @@ mod tests {
             created_at_slot: SlotId(0),
             updated_at_slot: SlotId(0),
             is_active: true,
+            guardian_ids: vec![],
         }
     }
 
@@ -349,17 +362,19 @@ mod tests {
     // validate_action: geçerli uzatma
     #[test]
     fn test_validate_extension_action_valid() {
+        let plan = make_plan(TriggerType::Inactivity { period_secs: 90 * 24 * 3600 });
         let state = make_state_in_grace();
         let action = GuardianAction::ExtendGracePeriod { extension_slots: 1_000_000 };
-        assert!(GuardianProtection::validate_action(&action, &state, SlotId(0)).is_ok());
+        assert!(GuardianProtection::validate_action(&action, &plan, &state, SlotId(0)).is_ok());
     }
 
     // validate_action: çok kısa uzatma → hata
     #[test]
     fn test_validate_extension_too_short() {
+        let plan = make_plan(TriggerType::Inactivity { period_secs: 90 * 24 * 3600 });
         let state = make_state_in_grace();
         let action = GuardianAction::ExtendGracePeriod { extension_slots: 100 }; // < 216_000
-        let err = GuardianProtection::validate_action(&action, &state, SlotId(0)).unwrap_err();
+        let err = GuardianProtection::validate_action(&action, &plan, &state, SlotId(0)).unwrap_err();
         assert!(matches!(err, InheritanceError::InvalidParameter(_)));
     }
 
@@ -374,11 +389,40 @@ mod tests {
         assert!(GuardianProtection::threshold_and_time_both_met(true, 3, 2));
     }
 
-    // approve_manual_activation her zaman geçerli
+    // NOVA-RED-INH-002: guardian_ids boşsa herhangi bir guardian onay verebilir
     #[test]
-    fn test_approve_manual_activation_always_valid() {
+    fn test_approve_manual_activation_empty_guardian_list_allows_any() {
+        let mut plan = make_plan(TriggerType::Inactivity { period_secs: 90 * 24 * 3600 });
+        plan.guardian_ids = vec![];
         let state = InheritanceState::new(InheritancePlanId([0u8; 32]), SlotId(0));
-        let action = GuardianAction::ApproveManualActivation { guardian_id: 1 };
-        assert!(GuardianProtection::validate_action(&action, &state, SlotId(0)).is_ok());
+        let action = GuardianAction::ApproveManualActivation { guardian_id: 999 };
+        assert!(GuardianProtection::validate_action(&action, &plan, &state, SlotId(0)).is_ok());
+    }
+
+    // NOVA-RED-INH-002: yetkisiz guardian reddedilir
+    #[test]
+    fn test_approve_manual_activation_unauthorized_guardian_rejected() {
+        let mut plan = make_plan(TriggerType::ManualActivation {
+            requires_guardian_approval: true,
+            guardian_threshold: 1,
+        });
+        plan.guardian_ids = vec![10, 20, 30];
+        let state = InheritanceState::new(InheritancePlanId([0u8; 32]), SlotId(0));
+        let action = GuardianAction::ApproveManualActivation { guardian_id: 99 };
+        let err = GuardianProtection::validate_action(&action, &plan, &state, SlotId(0)).unwrap_err();
+        assert!(matches!(err, InheritanceError::Unauthorized));
+    }
+
+    // NOVA-RED-INH-002: yetkili guardian kabul edilir
+    #[test]
+    fn test_approve_manual_activation_authorized_guardian_accepted() {
+        let mut plan = make_plan(TriggerType::ManualActivation {
+            requires_guardian_approval: true,
+            guardian_threshold: 1,
+        });
+        plan.guardian_ids = vec![10, 20, 30];
+        let state = InheritanceState::new(InheritancePlanId([0u8; 32]), SlotId(0));
+        let action = GuardianAction::ApproveManualActivation { guardian_id: 20 };
+        assert!(GuardianProtection::validate_action(&action, &plan, &state, SlotId(0)).is_ok());
     }
 }

@@ -145,7 +145,7 @@ use crate::{
         EncryptedTx, MempoolConfig, MempoolEntry, MempoolStats, RevealedBatch,
         TxHash, TxStatus,
     },
-    validation::{validate_encrypted_tx, ValidationConfig},
+    validation::{validate_encrypted_tx, ValidationConfig, SenderBlockLimiter},
 };
 use nova_primitives::types::{Address, SlotId};
 
@@ -164,6 +164,9 @@ pub struct MempoolPool {
     /// Bloom filter ön-eleme deduplicator (Solana Deduper pattern).
     /// DashMap lookup'tan ÖNCE çalışır → CPU tasarrufu.
     deduper: Mutex<TxDeduper>,
+
+    /// NOVA-RED-MEMPOOL-002: SenderBlockLimiter — blok başına gönderici TX sınırı.
+    sender_block_limiter: Mutex<SenderBlockLimiter>,
 
     /// Tüm TX kayıtları. Key: TxHash = commitment hash.
     entries: DashMap<TxHash, MempoolEntry>,
@@ -204,6 +207,7 @@ impl MempoolPool {
         );
         Self {
             deduper: Mutex::new(TxDeduper::new()),
+            sender_block_limiter: Mutex::new(SenderBlockLimiter::default_nova()),
             entries: DashMap::with_capacity(config.max_total_txs),
             slot_index: DashMap::new(),
             sender_tx_count: DashMap::new(),
@@ -294,6 +298,9 @@ impl MempoolPool {
                 tx_hash: tx_hash.to_hex(),
             });
         }
+
+        // ── 3a. NOVA-RED-MEMPOOL-002: Gönderici blok limiti kontrolü ─────
+        self.sender_block_limiter.lock().check_and_increment(&sender, current.0)?;
 
         // ── 3. Toplam kapasite kontrolü ───────────────────────────────────
         let current_size = self.entries.len();

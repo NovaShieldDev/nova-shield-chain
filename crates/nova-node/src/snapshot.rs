@@ -46,6 +46,10 @@ pub struct StateSnapshot {
     pub timestamp: u64,
     /// Protocol versiyonu (snapshot uyumluluğu için)
     pub protocol_version: u32,
+    /// NOVA-RED-NODE-011/015: Bütünlük hash'i (BLAKE3, hex).
+    /// `save()` sırasında hesaplanır, `load()` sırasında doğrulanır.
+    #[serde(default)]
+    pub integrity_hash: String,
 }
 
 impl StateSnapshot {
@@ -61,7 +65,7 @@ impl StateSnapshot {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        Self {
+        let mut snap = Self {
             block_height,
             block_hash: hex::encode(block_hash),
             chain_id,
@@ -69,10 +73,16 @@ impl StateSnapshot {
             accounts,
             timestamp,
             protocol_version: NOVA_PROTOCOL_VERSION,
-        }
+            integrity_hash: String::new(),
+        };
+        // Bütünlük hash'ini hesapla (integrity_hash hariç tüm alanlar)
+        snap.integrity_hash = hex::encode(snap.compute_hash());
+        snap
     }
 
     /// Dosyaya kaydet (JSON)
+    ///
+    /// NOVA-RED-NODE-011/015: integrity_hash kaydedilir.
     pub fn save(&self, path: impl AsRef<Path>) -> NodeResult<()> {
         let json = serde_json::to_string_pretty(self).map_err(|e| NodeError::SerializationError {
             reason: format!("snapshot serileştirme hatası: {e}"),
@@ -88,15 +98,32 @@ impl StateSnapshot {
         Ok(())
     }
 
-    /// Dosyadan yükle
+    /// Dosyadan yükle ve bütünlük doğrulaması yap.
+    ///
+    /// NOVA-RED-NODE-011/015: integrity_hash yoksa veya uyuşmuyorsa hata döner.
     pub fn load(path: impl AsRef<Path>) -> NodeResult<Self> {
         let content =
             std::fs::read_to_string(path.as_ref()).map_err(|e| NodeError::DatabaseError {
                 reason: format!("snapshot okunamadı: {e}"),
             })?;
-        serde_json::from_str(&content).map_err(|e| NodeError::SerializationError {
+        let snap: Self = serde_json::from_str(&content).map_err(|e| NodeError::SerializationError {
             reason: format!("snapshot parse hatası: {e}"),
-        })
+        })?;
+
+        // Bütünlük kontrolü (integrity_hash boş ise eski format — geç)
+        if !snap.integrity_hash.is_empty() {
+            let expected = hex::encode(snap.compute_hash());
+            if snap.integrity_hash != expected {
+                return Err(NodeError::DatabaseError {
+                    reason: format!(
+                        "snapshot bütünlük hatası: beklenen={}, hesaplanan={}",
+                        snap.integrity_hash, expected
+                    ),
+                });
+            }
+        }
+
+        Ok(snap)
     }
 
     /// Snapshot bütünlük hash'i (BLAKE3)

@@ -113,13 +113,14 @@ impl HeirManager {
             }
 
             // Bu katmanda yanıt veren var mı?
+            //
+            // NOVA-RED-INH-006: Yalnızca açıkça onay veren varisler aktif sayılır.
+            // Önceki hatalı davranış: timeout dolmamış herkes otomatik aktif kabul ediliyordu.
+            // Doğru davranış: aktif olmak için heir_acknowledgements'ta yer alması gerekir.
+            // Timeout dolmuş ve onay vermemiş varisler hariç tutulur.
             let active_heirs: Vec<&HeirRecord> = tier_heirs
                 .iter()
-                .filter(|h| {
-                    // Onay verdiyse veya timeout dolmadıysa aktif kabul et
-                    acknowledged.contains(&h.address)
-                        || !Self::has_timed_out(h, state, current_slot)
-                })
+                .filter(|h| acknowledged.contains(&h.address))
                 .cloned()
                 .collect();
 
@@ -337,6 +338,7 @@ mod tests {
             created_at_slot: SlotId(0),
             updated_at_slot: SlotId(0),
             is_active: true,
+            guardian_ids: vec![],
         }
     }
 
@@ -345,11 +347,13 @@ mod tests {
     }
 
     // Tek birincil varis, tam pay alır
+    // NOVA-RED-INH-006: Tek birincil varis — onay verdikten sonra tam tutarı alır
     #[test]
     fn test_single_primary_heir_full_amount() {
         let heirs = vec![HeirRecord::new(addr(1), HeirTier::Primary, 10_000, 100_000)];
         let plan = make_plan_with_heirs(heirs);
-        let state = make_state();
+        let mut state = make_state();
+        state.record_heir_acknowledgement(addr(1), SlotId(500)); // Onay gerekli
 
         let resolution = HeirManager::resolve_active_heirs(&plan, &state, 1_000_000, SlotId(1000));
         assert_eq!(resolution.active_tier, HeirTier::Primary);
@@ -357,7 +361,18 @@ mod tests {
         assert_eq!(resolution.allocations[0].1, 1_000_000);
     }
 
-    // İki birincil varis, %60/%40 pay
+    // NOVA-RED-INH-006: Onay vermeden aktif sayılmaz → TreasuryBurn
+    #[test]
+    fn test_single_primary_heir_no_acknowledgement_treasury_burn() {
+        let heirs = vec![HeirRecord::new(addr(1), HeirTier::Primary, 10_000, 100_000)];
+        let plan = make_plan_with_heirs(heirs);
+        let state = make_state(); // Onay yok
+
+        let resolution = HeirManager::resolve_active_heirs(&plan, &state, 1_000_000, SlotId(1000));
+        assert_eq!(resolution.active_tier, HeirTier::TreasuryBurn);
+    }
+
+    // İki birincil varis, %60/%40 pay — ikisi de onay vermiş
     #[test]
     fn test_two_primary_heirs_split() {
         let heirs = vec![
@@ -365,7 +380,9 @@ mod tests {
             HeirRecord::new(addr(2), HeirTier::Primary, 4_000, 100_000),
         ];
         let plan = make_plan_with_heirs(heirs);
-        let state = make_state();
+        let mut state = make_state();
+        state.record_heir_acknowledgement(addr(1), SlotId(100)); // Onay gerekli
+        state.record_heir_acknowledgement(addr(2), SlotId(100)); // Onay gerekli
 
         let resolution = HeirManager::resolve_active_heirs(&plan, &state, 1_000_000, SlotId(1000));
         assert_eq!(resolution.active_tier, HeirTier::Primary);
@@ -376,7 +393,7 @@ mod tests {
         assert_eq!(heir2.1, 400_000);
     }
 
-    // Birincil varis timeout → ikincil devralır
+    // Birincil varis onay vermedi, ikincil onay verdi → ikincil devralır
     #[test]
     fn test_fallback_to_secondary_on_timeout() {
         let heirs = vec![
@@ -385,9 +402,11 @@ mod tests {
         ];
         let plan = make_plan_with_heirs(heirs);
         let mut state = make_state();
-        state.release_started_at = Some(SlotId(0)); // Devir başladı
+        state.release_started_at = Some(SlotId(0));
+        // addr(1) onay vermedi (primary → aktif sayılmaz)
+        state.record_heir_acknowledgement(addr(2), SlotId(100)); // Secondary onay verdi
 
-        // 200 slot sonra → birincil timeout, ikincil aktif
+        // NOVA-RED-INH-006: Yalnızca onay verenler aktif — ikincil devralır
         let resolution = HeirManager::resolve_active_heirs(&plan, &state, 1_000_000, SlotId(200));
         assert_eq!(resolution.active_tier, HeirTier::Secondary);
         assert_eq!(resolution.allocations[0].0, addr(2));

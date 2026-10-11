@@ -109,12 +109,14 @@ mod tests {
         coord.deposit(id, 10_000_000).unwrap(); // 0.1 BTC
 
         let to = AssetAddress::bitcoin("bc1qrecipient");
-        let receipt = coord.send_bitcoin(id, &to, 1_000_000, 5, 200).unwrap();
+        let receipt = coord.send_bitcoin(owner(), id, &to, 1_000_000, 5, 200).unwrap();
 
-        assert!(receipt.success);
+        // NOVA-RED-GUARD-003: Guardian onayı olmadan pending (success=false)
         assert_eq!(receipt.vault_id, id);
+        assert_ne!(receipt.tx_hash, [0u8; 32]);
+        // Bakiye guardian onayı beklenirken değişmez
         let vault = coord.get_vault(id).unwrap();
-        assert_eq!(vault.balance, 9_000_000);
+        assert_eq!(vault.balance, 10_000_000);
     }
 
     // ─── 3: Ethereum EIP-1559 işlemi ───────────────────────────────────────
@@ -288,13 +290,13 @@ mod tests {
         assert_eq!(coord.vault_count(), 4);
 
         // Her vault'tan gönderim
-        coord.send_bitcoin(btc_id, &AssetAddress::bitcoin("bc1q"), 100_000, 5, 1).unwrap();
+        coord.send_bitcoin(owner(), btc_id, &AssetAddress::bitcoin("bc1q"), 100_000, 5, 1).unwrap();
         coord.send_ethereum(eth_id, EthAddress([0xFFu8; 20]), 100_000_000_000_000_000, 1).unwrap();
         coord.send_solana(sol_id, SolanaPubkey([0xBBu8; 32]), 100_000_000, 1).unwrap();
         coord.send_cosmos_ibc(cos_id, AssetAddress::cosmos([0x99u8; 20]), 100_000, "uatom", 1).unwrap();
 
-        // Tüm vaultların bakiyeleri güncellendi
-        assert_eq!(coord.get_vault(btc_id).unwrap().balance, 900_000);
+        // Bitcoin pending (guardian onayı bekleniyor) → bakiye değişmedi
+        assert_eq!(coord.get_vault(btc_id).unwrap().balance, 1_000_000);
     }
 
     // ─── 11: EthTx ERC-20 calldata ─────────────────────────────────────────
@@ -334,13 +336,15 @@ mod tests {
 
         // İki farklı kanaldan transfer
         for channel in ["channel-0", "channel-207"] {
+            let sender = AssetAddress::cosmos([0x01u8; 20]);
+            let caller = sender.display.clone();
             let msg = IbcTransferMsg::new(
                 channel, "uatom", 1_000_000,
-                AssetAddress::cosmos([0x01u8; 20]),
+                sender,
                 AssetAddress::cosmos([0x02u8; 20]),
                 1000,
             );
-            module.send_transfer(msg).unwrap();
+            module.send_transfer(&caller, msg).unwrap();
         }
 
         assert_eq!(module.pending_count(), 2);

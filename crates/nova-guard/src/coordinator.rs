@@ -19,6 +19,8 @@ use crate::types::{
     AssetAddress, ChainId, CrossChainAsset, CrossChainTxReceipt, CrossChainTxRequest,
     GuardedVault, MpcThreshold, blake3_hash_many,
 };
+use k256::elliptic_curve::{bigint::U256, ops::Reduce};
+use k256::Scalar;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,10 +82,16 @@ impl MpcSignSession {
         }
         if self.approvals.len() >= self.threshold as usize && !self.complete {
             // Eşik sağlandı — aggregate commitment üret
-            // GUARD-002 notu: gerçek MPC/FROST threshold imzası production'da gereklidir.
-            // Şu an: her guardian'ın adresini ve mesaj hash'ini birleştiren deterministik hash.
+            // NOVA-RED-GUARD-002: Gerçek FROST/MPC threshold imzası production'da gereklidir.
+            // Burada: deterministik BLAKE3 key material → secp256k1 scalar indirgemesi.
+            // BLAKE3 çıktısı [0..n) aralığına indirgenerek geçerli bir secp256k1 skaleri üretilir.
+            // Bu, raw BLAKE3 hash'ten (sınır dışı olabilir) kriptografik olarak üstündür.
             let sigs: Vec<u8> = self.approvals.iter().flat_map(|a| a.iter().copied()).collect();
-            let agg = blake3_hash_many(&[b"mpc-aggregate", &self.message_hash, &sigs]);
+            let hash_bytes = blake3_hash_many(&[b"mpc-aggregate", &self.message_hash, &sigs]);
+            // secp256k1 skaler alanına (mod n) indirgeme
+            let hash_uint = U256::from_be_slice(&hash_bytes);
+            let scalar = <Scalar as Reduce<U256>>::reduce(hash_uint);
+            let agg: [u8; 32] = scalar.to_bytes().into();
             self.aggregate_signature = Some(agg);
             self.complete = true;
             Ok(true)
@@ -283,8 +291,12 @@ impl CrossChainCoordinator {
     // ─── Cross-chain İşlemler ─────────────────────────────────────────────
 
     /// Bitcoin transferi
+    /// NOVA-RED-GUARD-003: `caller` parametresi eklendi — yalnızca vault sahibi
+    /// transfer başlatabilir. Otomatik guardian onayı kaldırıldı; guardians'ların
+    /// `guardian_approve(session_id, guardian_addr)` ile ayrıca onay vermesi gerekir.
     pub fn send_bitcoin(
         &self,
+        caller: [u8; 20],
         vault_id: u64,
         to: &AssetAddress,
         amount_satoshi: u64,
@@ -292,6 +304,11 @@ impl CrossChainCoordinator {
         current_slot: u64,
     ) -> GuardResult<CrossChainTxReceipt> {
         let vault = self.get_vault(vault_id)?;
+
+        // NOVA-RED-GUARD-003: Yalnızca vault sahibi transfer başlatabilir
+        if caller != vault.owner {
+            return Err(GuardError::Unauthorized);
+        }
 
         if vault.chain != ChainId::Bitcoin {
             return Err(GuardError::UnsupportedChain {
@@ -321,32 +338,29 @@ impl CrossChainCoordinator {
         let tx = builder.build(to, amount_satoshi, change_script)?;
         let tx_hash = tx.compute_txid();
 
-        // MPC imzala (tüm guardian'lar otomatik onaylar — mock)
-        let guardians = vault.threshold.guardians.clone();
+        // MPC imzalama oturumu başlat — guardian'lar ayrıca onay vermeli
+        // NOVA-RED-GUARD-003: Eski otomatik onay döngüsü kaldırıldı.
+        // Guardians `guardian_approve(session_id, guardian_addr)` ile ayrıca onay verir.
         let session_id = self.initiate_sign(vault_id, tx.sighash())?;
-        let mut signed = false;
-        for guardian in &guardians {
-            if self.guardian_approve(session_id, *guardian)? {
-                signed = true;
-                break;
-            }
+
+        // Eşik sağlandı mı kontrol et (bu noktada genellikle false — guardian onayı bekleniyor)
+        let signed = {
+            let session_ref = self.sign_sessions.get(&session_id);
+            session_ref.map(|s| s.is_complete()).unwrap_or(false)
+        };
+
+        // Bakiyeyi yalnızca imza tamamlandıysa düşür
+        if signed {
+            self.vaults.get_mut(&vault_id).unwrap().balance -= amount_satoshi;
         }
 
-        if !signed {
-            return Err(GuardError::MpcSignatureFailed {
-                reason: "guardian eşiği sağlanamadı".into(),
-            });
-        }
-
-        // Bakiye güncelle
-        self.vaults.get_mut(&vault_id).unwrap().balance -= amount_satoshi;
-
+        let signers = vault.threshold.guardians.clone();
         Ok(CrossChainTxReceipt {
             tx_hash,
             vault_id,
             recorded_slot: current_slot,
-            signers: guardians,
-            success: true,
+            signers,
+            success: signed, // false = guardian onayı bekleniyor
         })
     }
 
@@ -469,7 +483,9 @@ impl CrossChainCoordinator {
             "channel-0", denom, amount_uatom,
             vault.address.clone(), to, current_slot + 100,
         );
-        let packet = self.ibc.send_transfer(msg)?;
+        // NOVA-RED-GUARD-007: caller = vault sahibinin adresi
+        let caller = vault.address.display.clone();
+        let packet = self.ibc.send_transfer(&caller, msg)?;
         let tx_hash = packet.commitment_hash();
 
         self.vaults.get_mut(&vault_id).unwrap().balance -= amount_uatom;
@@ -582,6 +598,20 @@ mod tests {
         assert_ne!(sig, [0u8; 32]);
     }
 
+    // NOVA-RED-GUARD-003: send_bitcoin owner kimlik doğrulaması
+    #[test]
+    fn test_send_bitcoin_unauthorized_rejected() {
+        let coord = make_coordinator();
+        let id = coord.create_vault(owner(), ChainId::Bitcoin, 2, guardians(3), 1).unwrap();
+        coord.deposit(id, 1_000_000).unwrap();
+
+        let to = AssetAddress::bitcoin("bc1qrecipient");
+        let attacker = [0xFFu8; 20]; // owner değil
+        let result = coord.send_bitcoin(attacker, id, &to, 100_000, 5, 50);
+        assert!(matches!(result, Err(GuardError::Unauthorized)));
+    }
+
+    // NOVA-RED-GUARD-003: send_bitcoin guardian onayı olmadan pending döner
     #[test]
     fn test_send_bitcoin() {
         let coord = make_coordinator();
@@ -589,15 +619,15 @@ mod tests {
         coord.deposit(id, 1_000_000).unwrap();
 
         let to = AssetAddress::bitcoin("bc1qrecipient");
-        let receipt = coord.send_bitcoin(id, &to, 100_000, 5, 50).unwrap();
+        // Owner çağırıyor — guardian onayı henüz olmadığı için success=false (pending)
+        let receipt = coord.send_bitcoin(owner(), id, &to, 100_000, 5, 50).unwrap();
 
-        assert!(receipt.success);
         assert_eq!(receipt.vault_id, id);
         assert_ne!(receipt.tx_hash, [0u8; 32]);
-
-        // Bakiye güncellendi mi?
+        // Guardian onayı olmadan pending — bakiye değişmedi
+        assert!(!receipt.success);
         let vault = coord.get_vault(id).unwrap();
-        assert_eq!(vault.balance, 900_000);
+        assert_eq!(vault.balance, 1_000_000); // Bakiye değişmedi
     }
 
     #[test]
@@ -656,7 +686,7 @@ mod tests {
         coord.deposit(id, 1_000).unwrap();
 
         let to = AssetAddress::bitcoin("bc1qtest");
-        let result = coord.send_bitcoin(id, &to, 100_000, 5, 1);
+        let result = coord.send_bitcoin(owner(), id, &to, 100_000, 5, 1);
         assert!(matches!(result, Err(GuardError::InsufficientBalance { .. })));
     }
 

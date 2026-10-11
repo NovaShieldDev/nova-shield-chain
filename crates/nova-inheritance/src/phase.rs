@@ -452,6 +452,7 @@ mod tests {
             created_at_slot: SlotId(0),
             updated_at_slot: SlotId(0),
             is_active: true,
+            guardian_ids: vec![],
         };
         let state = InheritanceState::new(plan_id, SlotId(0));
         (plan, state)

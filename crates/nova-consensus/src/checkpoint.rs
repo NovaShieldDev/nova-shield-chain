@@ -83,14 +83,19 @@ impl CheckpointManager {
             return Err(ConsensusError::InvalidCheckpoint);
         }
 
-        // Zaten var mı?
-        if self.checkpoints.read().contains_key(&height) {
-            return Err(ConsensusError::AlreadyFinalized { height });
-        }
-
         let block_hash = record.block_hash;
 
-        self.checkpoints.write().insert(height, record);
+        // NOVA-RED-CONSENSUS-006: TOCTOU düzeltmesi — write lock ile atomik kontrol+ekleme.
+        // Önceki read().contains_key() + write().insert() iki ayrı kilit alıyordu:
+        // iki thread aynı anda read() geçebilir, ikisi de insert yapar → çift kayıt.
+        // Tek write() kilidi ile hem kontrol hem ekleme atomik yapılır.
+        {
+            let mut checkpoints = self.checkpoints.write();
+            if checkpoints.contains_key(&height) {
+                return Err(ConsensusError::AlreadyFinalized { height });
+            }
+            checkpoints.insert(height, record);
+        }
         self.hash_to_height.write().insert(block_hash, height);
 
         info!(
