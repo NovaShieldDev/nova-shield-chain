@@ -60,10 +60,20 @@ Testnet:       Chain ID 42001 — 3 validators — live
 
 TGE circulating supply: 28,000,000 NOVA (14%).
 
-Distribution: Ecosystem & Community 22%, Team 19%, Investors 17% (hard cap across all rounds), Staking Rewards 16%, Treasury 12%, Public Sale 7%, Liquidity 7%.
+| Kategori | % | Miktar | Kilit |
+|----------|---|--------|-------|
+| Ekosistem & Topluluk | 22% | 44,000,000 | 48 ay doğrusal |
+| Takım & Kurucular | 19% | 38,000,000 | 12 ay kilit + 48 ay doğrusal |
+| Staking Ödülleri | 16% | 32,000,000 | 10 yıl yarılanma |
+| Gelecek Yatırımcılar (VC) | 15% | 30,000,000 | 12 ay kilit + 24 ay doğrusal |
+| Hazine | 12% | 24,000,000 | 6 ay kilit + yönetişim kararı |
+| Likidite | 7.5% | 15,000,000 | TGE'de serbest |
+| Halka Satış | 6.5% | 13,000,000 | TGE'de serbest |
+| Topluluk Ön Satış | 2.5% | 5,000,000 | 2 ay kilit + 12 ay doğrusal |
 
-Seed: $1.00/NOVA — $20M raise — FDV $200M
-Series A: $2.14/NOVA — $30M raise — FDV $428M
+**Topluluk Ön Satış** — 5,000,000 NOVA, $2.50/token. Sadece 15 günlük pencere. 2 ay kilit, ardından 12 ay boyunca her ay 1/12 serbest bırakılır. Tarih ve kayıt duyurusu resmi [@NovaShieldChainOfficial](https://x.com/NovaShieldChainOfficial) hesabından yapılacaktır.
+
+Gelecek VC yatırım turları ayrıca duyurulacaktır.
 
 ---
 

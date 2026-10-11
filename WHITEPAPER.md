@@ -10,7 +10,7 @@ Nova Shield Chain is a Layer 1 blockchain written entirely in Rust. It addresses
 
 Consensus combines BFT per-block commitment, GRANDPA finalization, and Snowball fork resolution, achieving sub-second finality. Shielded transfers use Groth16 zero-knowledge proofs on BLS12-381, the same curve used in Ethereum 2.0 consensus. The mempool uses Identity-Based Encryption over Ristretto255 to hide transaction contents until each slot closes, combined with a batch auction that clears all orders at a single uniform price. Key custody operates at the protocol layer via FROST-based threshold MPC — the private key is never assembled anywhere, not during key generation, signing, or storage.
 
-The NOVA token has a fixed supply of 200 million with no issuance mechanism and a 50% fee burn. The L1 codebase is twenty-one Rust crates, approximately 100,000 lines of production code, passing 3,588 tests with zero failures.
+The NOVA token has a fixed supply of 200 million with no issuance mechanism and a 50% fee burn. A community presale of 5,000,000 NOVA at $2.50 per token will be announced via official channels. The L1 codebase is twenty-one Rust crates, approximately 100,000 lines of production code, passing 3,588 tests with zero failures.
 
 ---
 
@@ -603,16 +603,17 @@ Model:         Deflationary (50% of all fees permanently burned)
 |----------|---|--------|---------|
 | Ecosystem & Community | 22% | 44,000,000 | 48-month linear |
 | Team & Founders | 19% | 38,000,000 | 12-month cliff + 48-month linear |
-| Investors | 17% | 34,000,000 | 12-month cliff + 24-month linear |
 | Staking Rewards | 16% | 32,000,000 | 10-year halving schedule |
+| Future Investors (VC) | 15% | 30,000,000 | 12-month cliff + 24-month linear |
 | Treasury | 12% | 24,000,000 | 6-month cliff + governance unlock |
-| Public Sale | 7% | 14,000,000 | Unlocked at TGE |
-| Liquidity | 7% | 14,000,000 | Unlocked at TGE |
+| Liquidity | 7.5% | 15,000,000 | Unlocked at TGE |
+| Public Sale | 6.5% | 13,000,000 | Unlocked at TGE |
+| Community Presale | 2.5% | 5,000,000 | 2-month cliff + 12-month linear |
 | **Total** | **100%** | **200,000,000** | |
 
 **TGE circulating supply: 28,000,000 NOVA (14%)**
 
-Investor allocation is permanently capped at 17% across all rounds.
+VC investor allocation is capped at 15% across all institutional rounds. Community Presale allocation is separate and fixed at 2.5%.
 
 ### 11.3 Staking Rewards Schedule
 
@@ -627,10 +628,18 @@ After the staking reserve is exhausted, validators earn entirely from fee revenu
 
 ### 11.4 Investment Rounds
 
-| Round | Allocation | Amount | Raise | FDV | Price |
-|-------|-----------|--------|-------|-----|-------|
-| Seed | 10% | 20,000,000 NOVA | $20,000,000 | $200,000,000 | $1.00 |
-| Series A | 7% | 14,000,000 NOVA | $30,000,000 | $428,000,000 | $2.14 |
+**Community Presale**
+
+| | |
+|-|-|
+| Allocation | 2.5% — 5,000,000 NOVA |
+| Price | $2.50 / NOVA |
+| FDV at presale price | $500,000,000 |
+| Window | 15 days only |
+| Vesting | 2-month cliff, then 1/12 released each month for 12 months |
+| Announcement | Official date via [@NovaShieldChainOfficial](https://x.com/NovaShieldChainOfficial) |
+
+Future VC rounds (targeting tier-1 funds) will be announced separately after public mainnet launch.
 
 ### 11.5 Deflationary Mechanics
 
