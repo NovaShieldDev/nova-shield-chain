@@ -382,7 +382,7 @@ A mempool observer — whether a validator, a well-connected full node, or a sea
 
 The mempool pool maintains:
 - A `DashMap` for lock-free concurrent transaction storage
-- A Bloom filter deduplicator (`TxDeduper`) using `2²⁰` bits and double-hashing, reset every 7,500 slots (~5 minutes). The filter runs before the DashMap lookup — a `O(1)` bit operation that eliminates most duplicate processing before any hashtable access occurs.
+- A Bloom filter deduplicator (`TxDeduper`) using `2¹⁶` (65,536) bits and double-hashing, reset every 7,500 slots (~5 minutes). The filter runs before the DashMap lookup — a `O(1)` bit operation that eliminates most duplicate processing before any hashtable access occurs.
 - Per-sender block limits to prevent mempool spam
 - Slot-based TX grouping with `MAX_TX_PER_SLOT = 10,000`
 - Automatic expiry of transactions from closed slots
@@ -533,7 +533,7 @@ The `BatchAuctionEngine` processes each slot independently and deterministically
 ### 10.2 On-Chain Governance
 
 ```
-MIN_DEPOSIT:      100,000 NOVA
+MIN_DEPOSIT:      1,000 NOVA
 VOTING_PERIOD:    ~7 days
 QUORUM:           33.4% of bonded stake
 PASS_THRESHOLD:   > 50% Yes / (Yes + No)
@@ -560,7 +560,7 @@ The inheritance system is a four-phase protocol enforced entirely by the runtime
 MAX_HEIRS           = 15
 MAX_CONDITIONS      = 10
 MAX_RELEASE_STEPS   = 20
-MIN_GRACE_PERIOD    = 2,000,000 slots (~9 days)
+MIN_GRACE_PERIOD    = 1,512,000 slots (~7 days)
 ```
 
 **Conditional rules** that can block or modify a transfer:
