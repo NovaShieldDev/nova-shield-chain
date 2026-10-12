@@ -288,7 +288,7 @@ Proves ownership and authorizes transparent withdrawal without revealing blindin
 
 ### 5.5 Commitment Tree
 
-Note commitments are stored in an incremental Merkle tree with a maximum capacity of 2²⁰ (~1,000,000) live notes. The tree is append-only; insertion order is preserved.
+Note commitments are stored in an incremental Merkle tree with a maximum capacity of 2²⁴ (~16,700,000) live notes. The tree is append-only; insertion order is preserved.
 
 **Leaf hashing**: the raw commitment bytes `cm.0` are used directly as the leaf value.
 
